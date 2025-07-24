@@ -1,10 +1,11 @@
-import requests, re, logging
+import logging, re, requests
 from yt_dlp import YoutubeDL
 
 log = logging.getLogger(__name__)
 UA = {"User-Agent": "Mozilla/5.0"}
 
-YDL_OPTS = {
+
+YDL_BASE = {
     "quiet": True,
     "skip_download": True,
     "socket_timeout": 10,
@@ -12,6 +13,9 @@ YDL_OPTS = {
     "retries": 3,
     "windows_filenames": True,
 }
+
+MAX_MB_INLINE = 49
+MAX_MB_CHAT = 49
 
 
 def _expand(url: str) -> str:
@@ -57,7 +61,6 @@ def _tikwm(url: str, *, inline=False):
                 [requests.get(i, headers=UA, timeout=15).content for i in imgs],
             )
         )
-
     raise RuntimeError("tikwm: unknown type")
 
 
@@ -129,29 +132,58 @@ def _douyin(url: str, *, inline=False):
     return "video", requests.get(src, headers=UA, timeout=20).content
 
 
+def _insta(url: str, *, inline=False):
+    if "instagram.com" not in url:
+        raise RuntimeError("skip")
+    api = "https://ripple-instagram.vercel.app/api"
+    js = requests.get(api, params={"url": url}, headers=UA, timeout=12).json()
+    if js.get("status") != "success":
+        raise RuntimeError("insta: fail")
+    d = js["data"]
+
+    if d["type"] == "video":
+        src = d["video"]
+        return "video", requests.get(src, headers=UA, timeout=25).content
+
+    if d["type"] == "image" and d.get("images"):
+        imgs = d["images"]
+        return (
+            ("photo_url", imgs)
+            if inline
+            else (
+                "photo",
+                [requests.get(i, headers=UA, timeout=15).content for i in imgs],
+            )
+        )
+
+    raise RuntimeError("insta: unsupported")
+
+
 def _ytdlp(url: str, *, inline=False):
-    with YoutubeDL(YDL_OPTS) as ydl:
+    if not any(d in url for d in ("youtube.com", "youtu.be", "tiktok.com")):
+        raise RuntimeError("skip")
+
+    limit = (MAX_MB_INLINE if inline else MAX_MB_CHAT) * 1024 * 1024
+    ydl_opts = {
+        **YDL_BASE,
+        "format": (
+            f"(bestvideo[ext=mp4][filesize<{limit}]+bestaudio[ext=m4a]/"
+            f"best[ext=mp4][filesize<{limit}]/best[filesize<{limit}])"
+        ),
+    }
+    with YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
 
-        if info.get("ext") == "mp4" and "url" in info:
-            vurl = info["url"]
-            return "video", requests.get(vurl, headers=UA, timeout=25).content
-
-        if info.get("_type") == "playlist" and info.get("entries"):
-            urls = [e["url"] for e in info["entries"]]
-            return (
-                ("photo_url", urls)
-                if inline
-                else (
-                    "photo",
-                    [requests.get(u, headers=UA, timeout=15).content for u in urls],
-                )
-            )
-
-    raise RuntimeError("yt-dlp: unsupported format")
+    if "url" not in info:
+        raise RuntimeError("video too big")
+    data = requests.get(info["url"], headers=UA, timeout=25).content
+    if not data:
+        raise RuntimeError("empty download")
+    return "video", data
 
 
 DOWNLOADERS = (
+    _insta,
     _ytdlp,
     _snap,
     _tikwm,
@@ -168,6 +200,10 @@ def fetch(url: str, *, inline: bool = False):
     for fn in DOWNLOADERS:
         try:
             return fn(url, inline=inline)
+        except RuntimeError as e:
+
+            if str(e) != "skip":
+                last_err = e
         except Exception as e:
             last_err = e
             log.warning("%s failed: %s", fn.__name__, e)

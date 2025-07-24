@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 
-
 import os, re, io, asyncio, tempfile, shelve, hashlib, atexit, logging, time
-from datetime import datetime, timedelta
 from downloader import fetch
 
 from telegram import (
@@ -28,11 +26,11 @@ from telegram.ext import (
 )
 from telegram.error import NetworkError, TimedOut
 
-
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 TTL_DAYS = int(os.getenv("CACHE_TTL_DAYS", "30"))
 MAX_MB = 49
 TIMEOUT = 40
+
 URL_RE = re.compile(
     r"""https?://(?:www\.)?(
         (?:vm\.)?tiktok\.com/[^\s]+ |
@@ -66,40 +64,38 @@ _purge_old()
 
 async def cmd_start(update: Update, _):
     await update.effective_message.reply_text(
-        f"Присылай TikTok‑ссылки — скачаю.\n"
-        f"Или попробуй inline: @{update.get_bot().username} <ссылка>"
+        f"Присылай ссылки — скачаю.\n"
+        f"Для inline: @{update.get_bot().username} <ссылка>"
     )
 
 
 async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
-    for url in URL_RE.findall(msg.text_html or ""):
+    for m in URL_RE.finditer(msg.text_html or ""):
+        url = m.group(0)
         typing = asyncio.create_task(_keep_typing(context.bot, msg.chat_id))
         try:
             kind, data = await asyncio.wait_for(
                 asyncio.to_thread(fetch, url), timeout=TIMEOUT
             )
         except asyncio.TimeoutError:
-            typing.cancel()
-            await _quiet_cancel(typing)
+            await _cancel_typing(typing)
             await msg.reply_text(
                 "⏰ Не удалось скачать за 40 сек.", reply_to_message_id=msg.id
             )
             continue
         except Exception as e:
-            typing.cancel()
-            await _quiet_cancel(typing)
+            await _cancel_typing(typing)
             log.exception("fetch err")
             await msg.reply_text(f"❌ {e}", reply_to_message_id=msg.id)
             continue
 
-        typing.cancel()
-        await _quiet_cancel(typing)
+        await _cancel_typing(typing)
 
         if kind == "video":
             if len(data) > MAX_MB * 1024 * 1024:
                 await msg.reply_text(
-                    "⚠️ Видео > 50 МБ — Telegram его не примет.",
+                    "⚠️ Видео > 50 МБ — лимит Telegram Bot API. Файл не отправлен.",
                     reply_to_message_id=msg.id,
                 )
                 continue
@@ -122,7 +118,6 @@ async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.inline_query.query.strip()
     m = URL_RE.search(q)
-
     if not m:
         await update.inline_query.answer(
             [
@@ -130,9 +125,8 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     id="help",
                     title="Как пользоваться?",
                     input_message_content=InputTextMessageContent(
-                        "Пришлите боту ссылку на TikTok в личку, "
-                        "а затем вызовите его так: "
-                        f"@{update.get_bot().username} <ссылка>"
+                        f"Пришлите боту ссылку в личку, "
+                        f"а затем вызовите его так: @{update.get_bot().username} <ссылка>"
                     ),
                 )
             ],
@@ -145,33 +139,7 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     item = CACHE.get(tid)
 
     if item:
-        if item["t"] == "video":
-            res = [
-                InlineQueryResultCachedVideo(
-                    id=tid, video_file_id=item["ids"][0], title="TikTok video"
-                )
-            ]
-        elif item["t"] == "photo_url":
-            photo_res = [
-                InlineQueryResultPhoto(
-                    id=f"{tid}_{n}",
-                    photo_url=u,
-                    thumbnail_url=u,
-                    title=f"Фото {n+1}/{len(item['ids'])}",
-                )
-                for n, u in enumerate(item["ids"])
-            ][:50]
-            sendall = _album_button(tid, len(item["ids"]))
-            res = photo_res + [sendall]
-        else:
-            res = [
-                InlineQueryResultCachedPhoto(
-                    id=f"{tid}_{n}",
-                    photo_file_id=fid,
-                    title=f"Фото {n+1}/{len(item['ids'])}",
-                )
-                for n, fid in enumerate(item["ids"])
-            ][:50]
+        res = _cached_results(tid, item)
         await update.inline_query.answer(res, cache_time=3600, is_personal=True)
         return
 
@@ -208,7 +176,6 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.inline_query.answer(
             photo_res + [sendall], cache_time=3600, is_personal=True
         )
-
         CACHE[tid] = {"t": "photo_url", "ids": data, "ts": time.time()}
         CACHE.sync()
         return
@@ -226,12 +193,38 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cache_time=1,
         is_personal=True,
     )
-
     context.application.create_task(_download_dm(tid, url, kind, data, context, update))
 
 
+def _cached_results(tid, item):
+    if item["t"] == "video":
+        return [
+            InlineQueryResultCachedVideo(
+                id=tid, video_file_id=item["ids"][0], title="Video"
+            )
+        ]
+    if item["t"] == "photo_url":
+        photos = [
+            InlineQueryResultPhoto(
+                id=f"{tid}_{n}",
+                photo_url=u,
+                thumbnail_url=u,
+                title=f"Фото {n+1}/{len(item['ids'])}",
+            )
+            for n, u in enumerate(item["ids"])
+        ][:50]
+        return photos + [_album_button(tid, len(item["ids"]))]
+    return [
+        InlineQueryResultCachedPhoto(
+            id=f"{tid}_{n}",
+            photo_file_id=fid,
+            title=f"Фото {n+1}/{len(item['ids'])}",
+        )
+        for n, fid in enumerate(item["ids"])
+    ][:50]
+
+
 def _album_button(tid: str, n: int) -> InlineQueryResultArticle:
-    """возвращает Article‑кнопку «📚 Отправить все»"""
     return InlineQueryResultArticle(
         id=f"{tid}_sendall",
         title=f"📚 Отправить все ({n})",
@@ -262,17 +255,15 @@ async def on_album_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def _download_dm(tid, url, kind, data, context, update):
-    """Старый механизм: DM‑загрузка видео/байтовых картинок → file_id → кэш"""
     try:
         if kind not in ("video", "photo"):
-
             kind, data = await asyncio.to_thread(fetch, url)
-        ids = []
+
         if kind == "video":
             if len(data) > MAX_MB * 1024 * 1024:
                 await context.bot.send_message(
                     update.inline_query.from_user.id,
-                    "⚠️ Видео > 50 МБ — Telegram не примет.",
+                    "⚠️ Видео > 50 МБ — Telegram не допускает такое в inline.",
                 )
                 return
             buf = io.BytesIO(data)
@@ -282,11 +273,13 @@ async def _download_dm(tid, url, kind, data, context, update):
             )
             ids = [msg.video.file_id]
         else:
+            ids = []
             for img in data:
                 msg = await context.bot.send_photo(
                     update.inline_query.from_user.id, io.BytesIO(img)
                 )
                 ids.append(msg.photo[-1].file_id)
+
         CACHE[tid] = {"t": kind, "ids": ids, "ts": time.time()}
         CACHE.sync()
     except Exception as e:
@@ -305,7 +298,8 @@ async def _keep_typing(bot, chat_id):
         await asyncio.sleep(4)
 
 
-async def _quiet_cancel(t: asyncio.Task):
+async def _cancel_typing(t: asyncio.Task):
+    t.cancel()
     try:
         await t
     except asyncio.CancelledError:
@@ -321,6 +315,7 @@ def main():
     app.add_handler(InlineQueryHandler(inline_query))
     app.add_handler(CallbackQueryHandler(on_album_cb))
     app.add_error_handler(lambda u, c: log.error("err: %s", c.error))
+
     try:
         app.run_polling(stop_signals=())
     except (NetworkError, TimedOut) as e:
