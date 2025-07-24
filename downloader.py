@@ -32,7 +32,7 @@ def _snap(url: str, *, inline=False):
         "https://snaptik.app/abc.php", data={"url": url}, headers=UA, timeout=12
     )
     if r.status_code != 200:
-        raise RuntimeError(f"SnapTik HTTP {r.status_code}")
+        raise RuntimeError("SnapTik HTTP %s" % r.status_code)
     m = re.search(r'(https://[^"]+snaptik[^"]+download[^"]+\.mp4)', r.text)
     if not m:
         raise RuntimeError("SnapTik: link not found")
@@ -102,6 +102,8 @@ def _ssstik(url: str, *, inline=False):
 
 
 def _douyin(url: str, *, inline=False):
+    if "douyin." not in url:
+        raise RuntimeError("skip")
     r = requests.get(
         "https://api.douyin.wtf/api",
         params={"url": url, "minimal": "false"},
@@ -136,23 +138,25 @@ def _insta(url: str, *, inline=False):
     if "instagram.com" not in url:
         raise RuntimeError("skip")
     api = "https://ripple-instagram.vercel.app/api"
-    js = requests.get(api, params={"url": url}, headers=UA, timeout=12).json()
+    try:
+        js = requests.get(api, params={"url": url}, headers=UA, timeout=12).json()
+    except Exception:
+        raise RuntimeError("skip")
+
     if js.get("status") != "success":
-        raise RuntimeError("insta: fail")
+        raise RuntimeError("skip")
+
     d = js["data"]
-
     if d["type"] == "video":
-        src = d["video"]
-        return "video", requests.get(src, headers=UA, timeout=25).content
+        return "video", requests.get(d["video"], headers=UA, timeout=25).content
 
-    if d["type"] == "image" and d.get("images"):
-        imgs = d["images"]
+    if d.get("images"):
         return (
-            ("photo_url", imgs)
+            ("photo_url", d["images"])
             if inline
             else (
                 "photo",
-                [requests.get(i, headers=UA, timeout=15).content for i in imgs],
+                [requests.get(i, headers=UA, timeout=15).content for i in d["images"]],
             )
         )
 
@@ -160,7 +164,9 @@ def _insta(url: str, *, inline=False):
 
 
 def _ytdlp(url: str, *, inline=False):
-    if not any(d in url for d in ("youtube.com", "youtu.be", "tiktok.com")):
+    if not any(
+        x in url for x in ("youtube.com", "youtu.be", "tiktok.com", "instagram.com")
+    ):
         raise RuntimeError("skip")
 
     limit = (MAX_MB_INLINE if inline else MAX_MB_CHAT) * 1024 * 1024
@@ -201,7 +207,6 @@ def fetch(url: str, *, inline: bool = False):
         try:
             return fn(url, inline=inline)
         except RuntimeError as e:
-
             if str(e) != "skip":
                 last_err = e
         except Exception as e:

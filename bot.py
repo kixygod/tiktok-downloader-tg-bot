@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-
 import os, re, io, asyncio, tempfile, shelve, hashlib, atexit, logging, time
 from downloader import fetch
 
@@ -65,7 +64,7 @@ _purge_old()
 async def cmd_start(update: Update, _):
     await update.effective_message.reply_text(
         f"Присылай ссылки — скачаю.\n"
-        f"Для inline: @{update.get_bot().username} <ссылка>"
+        f"Inline‑режим: @{update.get_bot().username} <ссылка>"
     )
 
 
@@ -73,6 +72,7 @@ async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     for m in URL_RE.finditer(msg.text_html or ""):
         url = m.group(0)
+
         typing = asyncio.create_task(_keep_typing(context.bot, msg.chat_id))
         try:
             kind, data = await asyncio.wait_for(
@@ -95,7 +95,7 @@ async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if kind == "video":
             if len(data) > MAX_MB * 1024 * 1024:
                 await msg.reply_text(
-                    "⚠️ Видео > 50 МБ — лимит Telegram Bot API. Файл не отправлен.",
+                    "⚠️ Видео > 50 МБ — лимит Telegram Bot API.",
                     reply_to_message_id=msg.id,
                 )
                 continue
@@ -104,9 +104,7 @@ async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 tf.flush()
                 await msg.chat.send_action(ChatAction.UPLOAD_VIDEO)
                 await msg.reply_video(
-                    open(tf.name, "rb"),
-                    reply_to_message_id=msg.id,
-                    supports_streaming=True,
+                    tf.name, reply_to_message_id=msg.id, supports_streaming=True
                 )
         else:
             await msg.chat.send_action(ChatAction.UPLOAD_PHOTO)
@@ -125,8 +123,8 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     id="help",
                     title="Как пользоваться?",
                     input_message_content=InputTextMessageContent(
-                        f"Пришлите боту ссылку в личку, "
-                        f"а затем вызовите его так: @{update.get_bot().username} <ссылка>"
+                        f"Пришлите ссылку боту в личку, "
+                        f"затем используйте: @{update.get_bot().username} <ссылка>"
                     ),
                 )
             ],
@@ -139,8 +137,9 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     item = CACHE.get(tid)
 
     if item:
-        res = _cached_results(tid, item)
-        await update.inline_query.answer(res, cache_time=3600, is_personal=True)
+        await update.inline_query.answer(
+            _cached_results(tid, item), cache_time=3600, is_personal=True
+        )
         return
 
     try:
@@ -163,7 +162,7 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if kind == "photo_url":
-        photo_res = [
+        photos = [
             InlineQueryResultPhoto(
                 id=f"{tid}_{n}",
                 photo_url=u,
@@ -172,9 +171,8 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             for n, u in enumerate(data)
         ][:50]
-        sendall = _album_button(tid, len(data))
         await update.inline_query.answer(
-            photo_res + [sendall], cache_time=3600, is_personal=True
+            photos + [_album_button(tid, len(data))], cache_time=3600, is_personal=True
         )
         CACHE[tid] = {"t": "photo_url", "ids": data, "ts": time.time()}
         CACHE.sync()
@@ -193,6 +191,7 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cache_time=1,
         is_personal=True,
     )
+
     context.application.create_task(_download_dm(tid, url, kind, data, context, update))
 
 
@@ -214,11 +213,10 @@ def _cached_results(tid, item):
             for n, u in enumerate(item["ids"])
         ][:50]
         return photos + [_album_button(tid, len(item["ids"]))]
+
     return [
         InlineQueryResultCachedPhoto(
-            id=f"{tid}_{n}",
-            photo_file_id=fid,
-            title=f"Фото {n+1}/{len(item['ids'])}",
+            id=f"{tid}_{n}", photo_file_id=fid, title=f"Фото {n+1}/{len(item['ids'])}"
         )
         for n, fid in enumerate(item["ids"])
     ][:50]
@@ -248,9 +246,8 @@ async def on_album_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await cq.edit_message_text("⚠️ Кэш истёк, попробуйте ещё раз.")
         return
 
-    urls = item["ids"]
-    for i in range(0, len(urls), 10):
-        media = [InputMediaPhoto(u) for u in urls[i : i + 10]]
+    for i in range(0, len(item["ids"]), 10):
+        media = [InputMediaPhoto(u) for u in item["ids"][i : i + 10]]
         await context.bot.send_media_group(chat_id=cq.from_user.id, media=media)
 
 
@@ -282,8 +279,9 @@ async def _download_dm(tid, url, kind, data, context, update):
 
         CACHE[tid] = {"t": kind, "ids": ids, "ts": time.time()}
         CACHE.sync()
+
     except Exception as e:
-        log.exception("dm fetch fail: %s", e)
+        log.exception("dm fetch fail")
         await context.bot.send_message(
             update.inline_query.from_user.id, f"❌ Не удалось скачать ({e})"
         )
@@ -310,6 +308,7 @@ def main():
     app = (
         Application.builder().token(TOKEN).read_timeout(20).http_version("1.1").build()
     )
+
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handler))
     app.add_handler(InlineQueryHandler(inline_query))
