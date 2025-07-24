@@ -15,7 +15,6 @@ YDL_OPTS = {
 
 
 def _expand(url: str) -> str:
-    """Разворачивает короткие vm.tiktok.com/... ссылки."""
     if re.match(r"https?://(?:vm\.)?tiktok\.com/(?:t|[A-Za-z0-9]+)", url):
         try:
             return requests.head(url, allow_redirects=True, headers=UA, timeout=10).url
@@ -24,7 +23,7 @@ def _expand(url: str) -> str:
     return url
 
 
-def _snap(url: str):
+def _snap(url: str, *, inline=False):
     r = requests.post(
         "https://snaptik.app/abc.php", data={"url": url}, headers=UA, timeout=12
     )
@@ -48,17 +47,21 @@ def _tikwm(url: str, *, inline=False):
         src = d["hdplay"] or d["play"]
         return "video", requests.get(src, headers=UA, timeout=20).content
 
-    if inline and d.get("images"):
-        return "photo_url", d["images"]
-    if d.get("images"):
-        return "photo", [
-            requests.get(i, headers=UA, timeout=15).content for i in d["images"]
-        ]
+    imgs = d.get("images")
+    if imgs:
+        return (
+            ("photo_url", imgs)
+            if inline
+            else (
+                "photo",
+                [requests.get(i, headers=UA, timeout=15).content for i in imgs],
+            )
+        )
 
     raise RuntimeError("tikwm: unknown type")
 
 
-def _vxtt(url: str):
+def _vxtt(url: str, *, inline=False):
     js = requests.get(
         "https://ripple-vx-tiktok.vercel.app/api",
         params={"url": url},
@@ -73,7 +76,7 @@ def _vxtt(url: str):
     raise RuntimeError("vxtiktok: only video supported")
 
 
-def _tikmate(url: str):
+def _tikmate(url: str, *, inline=False):
     i = url.rstrip("/").split("/")[-1].split("?")[0]
     token = requests.get(
         f"https://api.tikmate.app/api/lookup?id={i}", headers=UA, timeout=12
@@ -82,7 +85,7 @@ def _tikmate(url: str):
     return "video", requests.get(dl, headers=UA, timeout=20).content
 
 
-def _ssstik(url: str):
+def _ssstik(url: str, *, inline=False):
     r = requests.post(
         "https://ssstik.io/abc?url=dl",
         data={"id": url, "locale": "en"},
@@ -95,7 +98,7 @@ def _ssstik(url: str):
     return "video", requests.get(m.group(1), headers=UA, timeout=20).content
 
 
-def _douyin(url: str):
+def _douyin(url: str, *, inline=False):
     r = requests.get(
         "https://api.douyin.wtf/api",
         params={"url": url, "minimal": "false"},
@@ -111,9 +114,14 @@ def _douyin(url: str):
 
     d = js["data"]
     if d.get("images"):
-        return "photo", [
-            requests.get(i, headers=UA, timeout=15).content for i in d["images"]
-        ]
+        return (
+            ("photo_url", d["images"])
+            if inline
+            else (
+                "photo",
+                [requests.get(i, headers=UA, timeout=15).content for i in d["images"]],
+            )
+        )
 
     src = d.get("nwm_video_url_HQ") or d.get("nwm_video_url") or d.get("wm_video_url")
     if not src:
@@ -121,8 +129,7 @@ def _douyin(url: str):
     return "video", requests.get(src, headers=UA, timeout=20).content
 
 
-def _ytdlp(url: str):
-    """Пробуем прямой доступ через yt‑dlp; поддерживаем либо MP4, либо playlist с JPEG."""
+def _ytdlp(url: str, *, inline=False):
     with YoutubeDL(YDL_OPTS) as ydl:
         info = ydl.extract_info(url, download=False)
 
@@ -131,11 +138,15 @@ def _ytdlp(url: str):
             return "video", requests.get(vurl, headers=UA, timeout=25).content
 
         if info.get("_type") == "playlist" and info.get("entries"):
-            imgs = [
-                requests.get(e["url"], headers=UA, timeout=15).content
-                for e in info["entries"]
-            ]
-            return "photo", imgs
+            urls = [e["url"] for e in info["entries"]]
+            return (
+                ("photo_url", urls)
+                if inline
+                else (
+                    "photo",
+                    [requests.get(u, headers=UA, timeout=15).content for u in urls],
+                )
+            )
 
     raise RuntimeError("yt-dlp: unsupported format")
 
@@ -152,17 +163,12 @@ DOWNLOADERS = (
 
 
 def fetch(url: str, *, inline: bool = False):
-    """Возвращает ('video' | 'photo', bytes | [bytes, …]) или бросает ошибку."""
     url = _expand(url)
-    last = None
+    last_err = None
     for fn in DOWNLOADERS:
         try:
-            return (
-                fn(url, inline=inline)
-                if "inline" in fn.__code__.co_varnames
-                else fn(url)
-            )
+            return fn(url, inline=inline)
         except Exception as e:
-            last = e
+            last_err = e
             log.warning("%s failed: %s", fn.__name__, e)
-    raise last or RuntimeError("all downloaders failed")
+    raise last_err or RuntimeError("all downloaders failed")

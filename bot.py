@@ -149,7 +149,7 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 InlineQueryResultPhoto(
                     id=f"{tid}_{n}",
                     photo_url=u,
-                    thumb_url=u,
+                    thumbnail_url=u,
                     title=f"Фото {n+1}/{len(item['ids'])}",
                 )
                 for n, u in enumerate(item["ids"])
@@ -192,7 +192,7 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineQueryResultPhoto(
                 id=f"{tid}_{n}",
                 photo_url=u,
-                thumb_url=u,
+                thumbnail_url=u,
                 title=f"Фото {n+1}/{len(data)}",
             )
             for n, u in enumerate(data)
