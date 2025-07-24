@@ -115,10 +115,19 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not m:
         await update.inline_query.answer(
-            [],
-            switch_pm_text="Пришлите ссылку на TikTok",
-            switch_pm_parameter="start",
+            [
+                InlineQueryResultArticle(
+                    id="help",
+                    title="Как пользоваться",
+                    input_message_content=InputTextMessageContent(
+                        "Пришлите боту ссылку на TikTok в личку, "
+                        "а потом вызовите его так: @%s <ссылка>"
+                        % update.get_bot().username
+                    ),
+                )
+            ],
             cache_time=0,
+            is_personal=True,
         )
         return
 
