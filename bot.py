@@ -13,6 +13,8 @@ from telegram import (
     InlineQueryResultPhoto,
     InlineQueryResultArticle,
     InputTextMessageContent,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
 )
 from telegram.constants import ChatAction
 from telegram.ext import (
@@ -20,6 +22,7 @@ from telegram.ext import (
     CommandHandler,
     MessageHandler,
     InlineQueryHandler,
+    CallbackQueryHandler,
     ContextTypes,
     filters,
 )
@@ -34,7 +37,6 @@ tiktok_re = re.compile(r"https?://(?:www\.)?(?:vm\.)?tiktok\.com/[^\s]+")
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("ttbot")
-
 
 CACHE = shelve.open(os.path.join("data", "cache.db"))
 atexit.register(CACHE.close)
@@ -119,11 +121,11 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [
                 InlineQueryResultArticle(
                     id="help",
-                    title="Как пользоваться",
+                    title="Как пользоваться?",
                     input_message_content=InputTextMessageContent(
-                        "Пришлите боту ссылку на TikTok в личку, "
-                        "а потом вызовите его так: @%s <ссылка>"
-                        % update.get_bot().username
+                        "Пришлите боту ссылку на TikTok в личку, "
+                        "а затем вызовите его так: "
+                        f"@{update.get_bot().username} <ссылка>"
                     ),
                 )
             ],
@@ -134,6 +136,7 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     url, tid = m.group(0), _tid(m.group(0))
     item = CACHE.get(tid)
+
     if item:
         if item["t"] == "video":
             res = [
@@ -141,6 +144,18 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     id=tid, video_file_id=item["ids"][0], title="TikTok video"
                 )
             ]
+        elif item["t"] == "photo_url":
+            photo_res = [
+                InlineQueryResultPhoto(
+                    id=f"{tid}_{n}",
+                    photo_url=u,
+                    thumb_url=u,
+                    title=f"Фото {n+1}/{len(item['ids'])}",
+                )
+                for n, u in enumerate(item["ids"])
+            ][:50]
+            sendall = _album_button(tid, len(item["ids"]))
+            res = photo_res + [sendall]
         else:
             res = [
                 InlineQueryResultCachedPhoto(
@@ -153,13 +168,51 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.inline_query.answer(res, cache_time=3600, is_personal=True)
         return
 
+    try:
+        kind, data = await asyncio.wait_for(
+            asyncio.to_thread(fetch, url, inline=True), timeout=TIMEOUT
+        )
+    except Exception as e:
+        log.warning("inline fetch fail: %s", e)
+        await update.inline_query.answer(
+            [
+                InlineQueryResultArticle(
+                    id="err",
+                    title="❌ Не удалось скачать",
+                    input_message_content=InputTextMessageContent(str(e)),
+                )
+            ],
+            cache_time=0,
+            is_personal=True,
+        )
+        return
+
+    if kind == "photo_url":
+        photo_res = [
+            InlineQueryResultPhoto(
+                id=f"{tid}_{n}",
+                photo_url=u,
+                thumb_url=u,
+                title=f"Фото {n+1}/{len(data)}",
+            )
+            for n, u in enumerate(data)
+        ][:50]
+        sendall = _album_button(tid, len(data))
+        await update.inline_query.answer(
+            photo_res + [sendall], cache_time=3600, is_personal=True
+        )
+
+        CACHE[tid] = {"t": "photo_url", "ids": data, "ts": time.time()}
+        CACHE.sync()
+        return
+
     await update.inline_query.answer(
         [
             InlineQueryResultArticle(
                 id="pending",
                 title="⏳ Загружаю…",
                 input_message_content=InputTextMessageContent(
-                    "⏳ Скачиваю, пришлю в личку"
+                    "⏳ Скачиваю, скоро пришлю!"
                 ),
             )
         ],
@@ -167,63 +220,73 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
         is_personal=True,
     )
 
-    async def _job():
-        try:
-            kind, data = await asyncio.wait_for(
-                asyncio.to_thread(fetch, url, inline=True), timeout=TIMEOUT
-            )
-            if kind == "photo_url":
-                res = [
-                    InlineQueryResultPhoto(
-                        id=f"{tid}_{n}",
-                        photo_url=u,
-                        thumb_url=u,
-                        title=f"Фото {n+1}/{len(data)}",
-                    )
-                    for n, u in enumerate(data)
-                ][:50]
-                await update.inline_query.answer(res, cache_time=3600, is_personal=True)
-                return
-            if kind == "video" and len(data) > MAX_MB * 1024 * 1024:
+    context.application.create_task(_download_dm(tid, url, kind, data, context, update))
+
+
+def _album_button(tid: str, n: int) -> InlineQueryResultArticle:
+    """возвращает Article‑кнопку «📚 Отправить все»"""
+    return InlineQueryResultArticle(
+        id=f"{tid}_sendall",
+        title=f"📚 Отправить все ({n})",
+        input_message_content=InputTextMessageContent(
+            "Нажмите кнопку ниже, чтобы получить альбом"
+        ),
+        reply_markup=InlineKeyboardMarkup.from_button(
+            InlineKeyboardButton("📚 Отправить все", callback_data=f"ALBUM:{tid}")
+        ),
+    )
+
+
+async def on_album_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cq = update.callback_query
+    if not cq.data or not cq.data.startswith("ALBUM:"):
+        return
+    await cq.answer()
+    tid = cq.data.split(":", 1)[1]
+    item = CACHE.get(tid)
+    if not item:
+        await cq.edit_message_text("⚠️ Кэш истёк, попробуйте ещё раз.")
+        return
+
+    urls = item["ids"]
+    for i in range(0, len(urls), 10):
+        media = [InputMediaPhoto(u) for u in urls[i : i + 10]]
+        await context.bot.send_media_group(chat_id=cq.message.chat_id, media=media)
+
+
+async def _download_dm(tid, url, kind, data, context, update):
+    """Старый механизм: DM‑загрузка видео/байтовых картинок → file_id → кэш"""
+    try:
+        if kind not in ("video", "photo"):
+
+            kind, data = await asyncio.to_thread(fetch, url)
+        ids = []
+        if kind == "video":
+            if len(data) > MAX_MB * 1024 * 1024:
                 await context.bot.send_message(
                     update.inline_query.from_user.id,
-                    "⚠️ Видео > 50 МБ — Telegram не допускает такое в inline.",
+                    "⚠️ Видео > 50 МБ — Telegram не примет.",
                 )
                 return
-
-            ids = []
-            if kind == "video":
-                buf = io.BytesIO(data)
-                buf.name = "video.mp4"
-                msg = await context.bot.send_video(
-                    chat_id=update.inline_query.from_user.id,
-                    video=buf,
-                    supports_streaming=True,
+            buf = io.BytesIO(data)
+            buf.name = "video.mp4"
+            msg = await context.bot.send_video(
+                update.inline_query.from_user.id, buf, supports_streaming=True
+            )
+            ids = [msg.video.file_id]
+        else:
+            for img in data:
+                msg = await context.bot.send_photo(
+                    update.inline_query.from_user.id, io.BytesIO(img)
                 )
-                ids = [msg.video.file_id]
-            else:
-                for img in data:
-                    msg = await context.bot.send_photo(
-                        chat_id=update.inline_query.from_user.id,
-                        photo=io.BytesIO(img),
-                    )
-                    ids.append(msg.photo[-1].file_id)
-
-            CACHE[tid] = {"t": kind, "ids": ids, "ts": time.time()}
-            CACHE.sync()
-        except asyncio.TimeoutError:
-            await context.bot.send_message(
-                update.inline_query.from_user.id,
-                "⏰ Не удалось скачать за 40 сек.",
-            )
-        except Exception as e:
-            log.exception("inline fetch failed")
-            await context.bot.send_message(
-                update.inline_query.from_user.id,
-                f"❌ Не удалось скачать ({e})",
-            )
-
-    context.application.create_task(_job())
+                ids.append(msg.photo[-1].file_id)
+        CACHE[tid] = {"t": kind, "ids": ids, "ts": time.time()}
+        CACHE.sync()
+    except Exception as e:
+        log.exception("dm fetch fail: %s", e)
+        await context.bot.send_message(
+            update.inline_query.from_user.id, f"❌ Не удалось скачать ({e})"
+        )
 
 
 async def _keep_typing(bot, chat_id):
@@ -249,6 +312,7 @@ def main():
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handler))
     app.add_handler(InlineQueryHandler(inline_query))
+    app.add_handler(CallbackQueryHandler(on_album_cb))
     app.add_error_handler(lambda u, c: log.error("err: %s", c.error))
     try:
         app.run_polling(stop_signals=())
