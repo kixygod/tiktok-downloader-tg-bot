@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 
 
-import os, re, io, asyncio, tempfile, shelve, hashlib, atexit, logging, json, time
+import os, re, io, asyncio, tempfile, shelve, hashlib, atexit, logging, time
 from datetime import datetime, timedelta
-
 from downloader import fetch
+
 from telegram import (
     Update,
     InputMediaPhoto,
@@ -28,6 +28,7 @@ from telegram.error import NetworkError, TimedOut
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 TTL_DAYS = int(os.getenv("CACHE_TTL_DAYS", "30"))
 MAX_MB = 49
+TIMEOUT = 40
 tiktok_re = re.compile(r"https?://(?:www\.)?(?:vm\.)?tiktok\.com/[^\s]+")
 
 logging.basicConfig(level=logging.INFO)
@@ -43,8 +44,7 @@ def _tid(url: str) -> str:
 
 
 def _purge_old():
-    now = time.time()
-    ttl = TTL_DAYS * 86400
+    now, ttl = time.time(), TTL_DAYS * 86400
     for k in list(CACHE.keys()):
         if now - CACHE[k]["ts"] > ttl:
             del CACHE[k]
@@ -56,30 +56,40 @@ _purge_old()
 
 async def cmd_start(update: Update, _):
     await update.effective_message.reply_text(
-        f"Присылай ссылки на TikTok — скачаю.\n"
-        f"Или вызови прямо в любом чате: @{update.get_bot().username} <ссылка>"
+        f"Присылай TikTok‑ссылки — скачаю.\n"
+        f"Или попробуй inline: @{update.get_bot().username} <ссылка>"
     )
 
 
 async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     for url in tiktok_re.findall(msg.text_html or ""):
-        task = asyncio.create_task(_keep_typing(context.bot, msg.chat_id))
+        typing = asyncio.create_task(_keep_typing(context.bot, msg.chat_id))
         try:
-            kind, data = await asyncio.to_thread(fetch, url)
+            kind, data = await asyncio.wait_for(
+                asyncio.to_thread(fetch, url), timeout=TIMEOUT
+            )
+        except asyncio.TimeoutError:
+            typing.cancel()
+            await _quiet_cancel(typing)
+            await msg.reply_text(
+                "⏰ Не удалось скачать за 40 сек.", reply_to_message_id=msg.id
+            )
+            continue
         except Exception as e:
-            await _quiet_cancel(task)
+            typing.cancel()
+            await _quiet_cancel(typing)
             log.exception("fetch err")
             await msg.reply_text(f"❌ {e}", reply_to_message_id=msg.id)
             continue
 
-        await _quiet_cancel(task)
+        typing.cancel()
+        await _quiet_cancel(typing)
 
         if kind == "video":
             if len(data) > MAX_MB * 1024 * 1024:
                 await msg.reply_text(
-                    "⚠️ Видео > 50 МБ — Telegram не примет в inline. "
-                    "Попробуйте обрезать / сжать.",
+                    "⚠️ Видео > 50 МБ — Telegram его не примет.",
                     reply_to_message_id=msg.id,
                 )
                 continue
@@ -112,22 +122,17 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    url = m.group(0)
-    tid = _tid(url)
+    url, tid = m.group(0), _tid(m.group(0))
     item = CACHE.get(tid)
-
     if item:
-
         if item["t"] == "video":
-            results = [
+            res = [
                 InlineQueryResultCachedVideo(
-                    id=tid,
-                    video_file_id=item["ids"][0],
-                    title="TikTok video",
+                    id=tid, video_file_id=item["ids"][0], title="TikTok video"
                 )
             ]
         else:
-            results = [
+            res = [
                 InlineQueryResultCachedPhoto(
                     id=f"{tid}_{n}",
                     photo_file_id=fid,
@@ -135,16 +140,16 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 for n, fid in enumerate(item["ids"])
             ][:50]
-        await update.inline_query.answer(results, cache_time=3600, is_personal=True)
+        await update.inline_query.answer(res, cache_time=3600, is_personal=True)
         return
 
     await update.inline_query.answer(
         [
             InlineQueryResultArticle(
                 id="pending",
-                title="⏳ Контент загружается…",
+                title="⏳ Загружаю…",
                 input_message_content=InputTextMessageContent(
-                    "⏳ Скачиваю — пришлю в личку"
+                    "⏳ Скачиваю, пришлю в личку"
                 ),
             )
         ],
@@ -154,7 +159,9 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     async def _job():
         try:
-            kind, data = await asyncio.to_thread(fetch, url)
+            kind, data = await asyncio.wait_for(
+                asyncio.to_thread(fetch, url), timeout=TIMEOUT
+            )
             if kind == "video" and len(data) > MAX_MB * 1024 * 1024:
                 await context.bot.send_message(
                     update.inline_query.from_user.id,
@@ -182,7 +189,11 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             CACHE[tid] = {"t": kind, "ids": ids, "ts": time.time()}
             CACHE.sync()
-            log.info("cached %s %s %s", tid, kind, len(ids))
+        except asyncio.TimeoutError:
+            await context.bot.send_message(
+                update.inline_query.from_user.id,
+                "⏰ Не удалось скачать за 40 сек.",
+            )
         except Exception as e:
             log.exception("inline fetch failed")
             await context.bot.send_message(
@@ -217,7 +228,6 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handler))
     app.add_handler(InlineQueryHandler(inline_query))
     app.add_error_handler(lambda u, c: log.error("err: %s", c.error))
-
     try:
         app.run_polling(stop_signals=())
     except (NetworkError, TimedOut) as e:
