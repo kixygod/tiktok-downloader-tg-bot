@@ -251,7 +251,13 @@ async def on_album_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     urls = item["ids"]
     for i in range(0, len(urls), 10):
         media = [InputMediaPhoto(u) for u in urls[i : i + 10]]
-        await context.bot.send_media_group(chat_id=cq.message.chat_id, media=media)
+        await context.bot.send_media_group(chat_id=cq.from_user.id, media=media)
+
+    if cq.inline_message_id:
+        await context.bot.edit_message_text(
+            inline_message_id=cq.inline_message_id,
+            text="📬 Отправил все картинки в личку!",
+        )
 
 
 async def _download_dm(tid, url, kind, data, context, update):
