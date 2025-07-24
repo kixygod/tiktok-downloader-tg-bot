@@ -33,7 +33,14 @@ TOKEN = os.getenv("TELEGRAM_TOKEN")
 TTL_DAYS = int(os.getenv("CACHE_TTL_DAYS", "30"))
 MAX_MB = 49
 TIMEOUT = 40
-tiktok_re = re.compile(r"https?://(?:www\.)?(?:vm\.)?tiktok\.com/[^\s]+")
+URL_RE = re.compile(
+    r"""https?://(?:www\.)?(
+        (?:vm\.)?tiktok\.com/[^\s]+ |
+        instagram\.com/(?:(?:reel|p|tv)/[A-Za-z0-9_\-]+) |
+        (?:youtube\.com/watch\?v=|youtu\.be/)[\w\-]{11}
+    )""",
+    re.VERBOSE,
+)
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("ttbot")
@@ -66,7 +73,7 @@ async def cmd_start(update: Update, _):
 
 async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
-    for url in tiktok_re.findall(msg.text_html or ""):
+    for url in URL_RE.findall(msg.text_html or ""):
         typing = asyncio.create_task(_keep_typing(context.bot, msg.chat_id))
         try:
             kind, data = await asyncio.wait_for(
@@ -114,7 +121,7 @@ async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.inline_query.query.strip()
-    m = tiktok_re.search(q)
+    m = URL_RE.search(q)
 
     if not m:
         await update.inline_query.answer(
@@ -241,7 +248,7 @@ async def on_album_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cq = update.callback_query
     if not cq.data or not cq.data.startswith("ALBUM:"):
         return
-    await cq.answer()
+    await cq.answer("📬 Проверьте личку!")
     tid = cq.data.split(":", 1)[1]
     item = CACHE.get(tid)
     if not item:
@@ -252,12 +259,6 @@ async def on_album_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for i in range(0, len(urls), 10):
         media = [InputMediaPhoto(u) for u in urls[i : i + 10]]
         await context.bot.send_media_group(chat_id=cq.from_user.id, media=media)
-
-    if cq.inline_message_id:
-        await context.bot.edit_message_text(
-            inline_message_id=cq.inline_message_id,
-            text="📬 Отправил все картинки в личку!",
-        )
 
 
 async def _download_dm(tid, url, kind, data, context, update):
