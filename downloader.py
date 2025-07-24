@@ -27,12 +27,18 @@ def _expand(url: str) -> str:
     return url
 
 
+def _is_tiktok(url: str) -> bool:
+    return "tiktok.com" in url
+
+
 def _snap(url: str, *, inline=False):
+    if not _is_tiktok(url):
+        raise RuntimeError("skip")
     r = requests.post(
         "https://snaptik.app/abc.php", data={"url": url}, headers=UA, timeout=12
     )
     if r.status_code != 200:
-        raise RuntimeError("SnapTik HTTP %s" % r.status_code)
+        raise RuntimeError(f"SnapTik HTTP {r.status_code}")
     m = re.search(r'(https://[^"]+snaptik[^"]+download[^"]+\.mp4)', r.text)
     if not m:
         raise RuntimeError("SnapTik: link not found")
@@ -40,6 +46,8 @@ def _snap(url: str, *, inline=False):
 
 
 def _tikwm(url: str, *, inline=False):
+    if not _is_tiktok(url):
+        raise RuntimeError("skip")
     js = requests.get(
         "https://tikwm.com/api/", params={"url": url}, headers=UA, timeout=12
     ).json()
@@ -65,6 +73,8 @@ def _tikwm(url: str, *, inline=False):
 
 
 def _vxtt(url: str, *, inline=False):
+    if not _is_tiktok(url):
+        raise RuntimeError("skip")
     js = requests.get(
         "https://ripple-vx-tiktok.vercel.app/api",
         params={"url": url},
@@ -74,12 +84,16 @@ def _vxtt(url: str, *, inline=False):
     if js.get("status") != "success":
         raise RuntimeError("vxtiktok: fail")
     if js["data"]["type"] == "video":
-        src = js["data"]["video"]
-        return "video", requests.get(src, headers=UA, timeout=20).content
+        return (
+            "video",
+            requests.get(js["data"]["video"], headers=UA, timeout=20).content,
+        )
     raise RuntimeError("vxtiktok: only video supported")
 
 
 def _tikmate(url: str, *, inline=False):
+    if not _is_tiktok(url):
+        raise RuntimeError("skip")
     i = url.rstrip("/").split("/")[-1].split("?")[0]
     token = requests.get(
         f"https://api.tikmate.app/api/lookup?id={i}", headers=UA, timeout=12
@@ -89,6 +103,8 @@ def _tikmate(url: str, *, inline=False):
 
 
 def _ssstik(url: str, *, inline=False):
+    if not _is_tiktok(url):
+        raise RuntimeError("skip")
     r = requests.post(
         "https://ssstik.io/abc?url=dl",
         data={"id": url, "locale": "en"},
@@ -202,14 +218,15 @@ DOWNLOADERS = (
 
 def fetch(url: str, *, inline: bool = False):
     url = _expand(url)
-    last_err = None
+    first_err = None
     for fn in DOWNLOADERS:
         try:
             return fn(url, inline=inline)
         except RuntimeError as e:
-            if str(e) != "skip":
-                last_err = e
+            if str(e) != "skip" and first_err is None:
+                first_err = e
         except Exception as e:
-            last_err = e
             log.warning("%s failed: %s", fn.__name__, e)
-    raise last_err or RuntimeError("all downloaders failed")
+            if first_err is None:
+                first_err = e
+    raise first_err or RuntimeError("all downloaders failed")

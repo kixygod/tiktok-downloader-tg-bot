@@ -63,8 +63,7 @@ _purge_old()
 
 async def cmd_start(update: Update, _):
     await update.effective_message.reply_text(
-        f"Присылай ссылки — скачаю.\n"
-        f"Inline‑режим: @{update.get_bot().username} <ссылка>"
+        f"Присылай ссылки — скачаю.\n" f"Inline: @{update.get_bot().username} <ссылка>"
     )
 
 
@@ -80,9 +79,7 @@ async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         except asyncio.TimeoutError:
             await _cancel_typing(typing)
-            await msg.reply_text(
-                "⏰ Не удалось скачать за 40 сек.", reply_to_message_id=msg.id
-            )
+            await msg.reply_text("⏰ >40 сек. — бросил.", reply_to_message_id=msg.id)
             continue
         except Exception as e:
             await _cancel_typing(typing)
@@ -95,8 +92,7 @@ async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if kind == "video":
             if len(data) > MAX_MB * 1024 * 1024:
                 await msg.reply_text(
-                    "⚠️ Видео > 50 МБ — лимит Telegram Bot API.",
-                    reply_to_message_id=msg.id,
+                    "⚠️ Видео > 50 МБ (лимит Bot API).", reply_to_message_id=msg.id
                 )
                 continue
             with tempfile.NamedTemporaryFile("wb", suffix=".mp4") as tf:
@@ -124,7 +120,7 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     title="Как пользоваться?",
                     input_message_content=InputTextMessageContent(
                         f"Пришлите ссылку боту в личку, "
-                        f"затем используйте: @{update.get_bot().username} <ссылка>"
+                        f"а потом: @{update.get_bot().username} <ссылка>"
                     ),
                 )
             ],
@@ -134,11 +130,10 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     url, tid = m.group(0), _tid(m.group(0))
-    item = CACHE.get(tid)
-
-    if item:
+    cached = CACHE.get(tid)
+    if cached:
         await update.inline_query.answer(
-            _cached_results(tid, item), cache_time=3600, is_personal=True
+            _cached_results(tid, cached), cache_time=3600, is_personal=True
         )
         return
 
@@ -152,7 +147,7 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [
                 InlineQueryResultArticle(
                     id="err",
-                    title="❌ Не удалось скачать",
+                    title="❌ Ошибка",
                     input_message_content=InputTextMessageContent(str(e)),
                 )
             ],
@@ -183,9 +178,7 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineQueryResultArticle(
                 id="pending",
                 title="⏳ Загружаю…",
-                input_message_content=InputTextMessageContent(
-                    "⏳ Скачиваю, скоро пришлю!"
-                ),
+                input_message_content=InputTextMessageContent("⏳ Скачиваю…"),
             )
         ],
         cache_time=1,
@@ -245,10 +238,9 @@ async def on_album_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not item:
         await cq.edit_message_text("⚠️ Кэш истёк, попробуйте ещё раз.")
         return
-
     for i in range(0, len(item["ids"]), 10):
         media = [InputMediaPhoto(u) for u in item["ids"][i : i + 10]]
-        await context.bot.send_media_group(chat_id=cq.from_user.id, media=media)
+        await context.bot.send_media_group(cq.from_user.id, media=media)
 
 
 async def _download_dm(tid, url, kind, data, context, update):
@@ -260,7 +252,7 @@ async def _download_dm(tid, url, kind, data, context, update):
             if len(data) > MAX_MB * 1024 * 1024:
                 await context.bot.send_message(
                     update.inline_query.from_user.id,
-                    "⚠️ Видео > 50 МБ — Telegram не допускает такое в inline.",
+                    "⚠️ Видео > 50 МБ — слишком для inline.",
                 )
                 return
             buf = io.BytesIO(data)
