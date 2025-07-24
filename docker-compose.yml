@@ -1,12 +1,11 @@
 version: "3.8"
-
 services:
   tiktok-bot:
     build: .
     env_file: .env
     volumes:
       - /tmp:/tmp
-      - ./data:/app
+      - ./data:/app/data
     restart: unless-stopped
     cap_add:
       - NET_ADMIN

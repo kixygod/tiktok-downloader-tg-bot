@@ -34,7 +34,7 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("ttbot")
 
 
-CACHE = shelve.open("cache.db")
+CACHE = shelve.open(os.path.join("data", "cache.db"))
 atexit.register(CACHE.close)
 
 
