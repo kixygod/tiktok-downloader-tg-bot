@@ -10,6 +10,7 @@ from telegram import (
     InputMediaPhoto,
     InlineQueryResultCachedVideo,
     InlineQueryResultCachedPhoto,
+    InlineQueryResultPhoto,
     InlineQueryResultArticle,
     InputTextMessageContent,
 )
@@ -169,8 +170,20 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     async def _job():
         try:
             kind, data = await asyncio.wait_for(
-                asyncio.to_thread(fetch, url), timeout=TIMEOUT
+                asyncio.to_thread(fetch, url, inline=True), timeout=TIMEOUT
             )
+            if kind == "photo_url":
+                res = [
+                    InlineQueryResultPhoto(
+                        id=f"{tid}_{n}",
+                        photo_url=u,
+                        thumb_url=u,
+                        title=f"Фото {n+1}/{len(data)}",
+                    )
+                    for n, u in enumerate(data)
+                ][:50]
+                await update.inline_query.answer(res, cache_time=3600, is_personal=True)
+                return
             if kind == "video" and len(data) > MAX_MB * 1024 * 1024:
                 await context.bot.send_message(
                     update.inline_query.from_user.id,

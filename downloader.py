@@ -25,8 +25,9 @@ def _expand(url: str) -> str:
 
 
 def _snap(url: str):
-    r = requests.post("https://snaptik.app/abc.php",
-                      data={"url": url}, headers=UA, timeout=12)
+    r = requests.post(
+        "https://snaptik.app/abc.php", data={"url": url}, headers=UA, timeout=12
+    )
     if r.status_code != 200:
         raise RuntimeError(f"SnapTik HTTP {r.status_code}")
     m = re.search(r'(https://[^"]+snaptik[^"]+download[^"]+\.mp4)', r.text)
@@ -35,9 +36,10 @@ def _snap(url: str):
     return "video", requests.get(m.group(1), headers=UA, timeout=20).content
 
 
-def _tikwm(url: str):
-    js = requests.get("https://tikwm.com/api/",
-                      params={"url": url}, headers=UA, timeout=12).json()
+def _tikwm(url: str, *, inline=False):
+    js = requests.get(
+        "https://tikwm.com/api/", params={"url": url}, headers=UA, timeout=12
+    ).json()
     if js.get("code") != 0:
         raise RuntimeError(f"tikwm: {js.get('msg')}")
     d = js["data"]
@@ -46,16 +48,23 @@ def _tikwm(url: str):
         src = d["hdplay"] or d["play"]
         return "video", requests.get(src, headers=UA, timeout=20).content
 
-    imgs = d.get("images")
-    if imgs:
-        return "photo", [requests.get(i, headers=UA, timeout=15).content for i in imgs]
+    if inline and d.get("images"):
+        return "photo_url", d["images"]
+    if d.get("images"):
+        return "photo", [
+            requests.get(i, headers=UA, timeout=15).content for i in d["images"]
+        ]
 
     raise RuntimeError("tikwm: unknown type")
 
 
 def _vxtt(url: str):
-    js = requests.get("https://ripple-vx-tiktok.vercel.app/api",
-                      params={"url": url}, headers=UA, timeout=12).json()
+    js = requests.get(
+        "https://ripple-vx-tiktok.vercel.app/api",
+        params={"url": url},
+        headers=UA,
+        timeout=12,
+    ).json()
     if js.get("status") != "success":
         raise RuntimeError("vxtiktok: fail")
     if js["data"]["type"] == "video":
@@ -66,15 +75,20 @@ def _vxtt(url: str):
 
 def _tikmate(url: str):
     i = url.rstrip("/").split("/")[-1].split("?")[0]
-    token = requests.get(f"https://api.tikmate.app/api/lookup?id={i}",
-                         headers=UA, timeout=12).json()["token"]
+    token = requests.get(
+        f"https://api.tikmate.app/api/lookup?id={i}", headers=UA, timeout=12
+    ).json()["token"]
     dl = f"https://tikmate.app/download/{token}/{i}.mp4"
     return "video", requests.get(dl, headers=UA, timeout=20).content
 
 
 def _ssstik(url: str):
-    r = requests.post("https://ssstik.io/abc?url=dl",
-                      data={"id": url, "locale": "en"}, headers=UA, timeout=12)
+    r = requests.post(
+        "https://ssstik.io/abc?url=dl",
+        data={"id": url, "locale": "en"},
+        headers=UA,
+        timeout=12,
+    )
     m = re.search(r'href=\"(https://[^"]+\.mp4)\"', r.text)
     if not m:
         raise RuntimeError("ssstik: link not found")
@@ -82,9 +96,12 @@ def _ssstik(url: str):
 
 
 def _douyin(url: str):
-    r = requests.get("https://api.douyin.wtf/api",
-                     params={"url": url, "minimal": "false"},
-                     headers={**UA, "Accept": "application/json"}, timeout=12)
+    r = requests.get(
+        "https://api.douyin.wtf/api",
+        params={"url": url, "minimal": "false"},
+        headers={**UA, "Accept": "application/json"},
+        timeout=12,
+    )
     try:
         js = r.json()
     except ValueError:
@@ -94,7 +111,9 @@ def _douyin(url: str):
 
     d = js["data"]
     if d.get("images"):
-        return "photo", [requests.get(i, headers=UA, timeout=15).content for i in d["images"]]
+        return "photo", [
+            requests.get(i, headers=UA, timeout=15).content for i in d["images"]
+        ]
 
     src = d.get("nwm_video_url_HQ") or d.get("nwm_video_url") or d.get("wm_video_url")
     if not src:
@@ -107,32 +126,42 @@ def _ytdlp(url: str):
     with YoutubeDL(YDL_OPTS) as ydl:
         info = ydl.extract_info(url, download=False)
 
-
         if info.get("ext") == "mp4" and "url" in info:
             vurl = info["url"]
             return "video", requests.get(vurl, headers=UA, timeout=25).content
 
-
         if info.get("_type") == "playlist" and info.get("entries"):
-            imgs = [requests.get(e["url"], headers=UA, timeout=15).content
-                    for e in info["entries"]]
+            imgs = [
+                requests.get(e["url"], headers=UA, timeout=15).content
+                for e in info["entries"]
+            ]
             return "photo", imgs
 
     raise RuntimeError("yt-dlp: unsupported format")
 
 
 DOWNLOADERS = (
-    _ytdlp, _snap, _tikwm, _vxtt, _tikmate, _ssstik, _douyin,
+    _ytdlp,
+    _snap,
+    _tikwm,
+    _vxtt,
+    _tikmate,
+    _ssstik,
+    _douyin,
 )
 
 
-def fetch(url: str):
+def fetch(url: str, *, inline: bool = False):
     """Возвращает ('video' | 'photo', bytes | [bytes, …]) или бросает ошибку."""
     url = _expand(url)
     last = None
     for fn in DOWNLOADERS:
         try:
-            return fn(url)
+            return (
+                fn(url, inline=inline)
+                if "inline" in fn.__code__.co_varnames
+                else fn(url)
+            )
         except Exception as e:
             last = e
             log.warning("%s failed: %s", fn.__name__, e)
