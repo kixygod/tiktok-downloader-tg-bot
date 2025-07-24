@@ -1,9 +1,8 @@
 import logging, re, requests
-from yt_dlp import YoutubeDL
+from yt_dlp import YoutubeDL, utils as ytdlp_utils
 
 log = logging.getLogger(__name__)
 UA = {"User-Agent": "Mozilla/5.0"}
-
 
 YDL_BASE = {
     "quiet": True,
@@ -38,10 +37,10 @@ def _snap(url: str, *, inline=False):
         "https://snaptik.app/abc.php", data={"url": url}, headers=UA, timeout=12
     )
     if r.status_code != 200:
-        raise RuntimeError(f"SnapTik HTTP {r.status_code}")
+        raise RuntimeError(f"SnapTik HTTP {r.status_code}")
     m = re.search(r'(https://[^"]+snaptik[^"]+download[^"]+\.mp4)', r.text)
     if not m:
-        raise RuntimeError("SnapTik: link not found")
+        raise RuntimeError("SnapTik: ссылка не найдена")
     return "video", requests.get(m.group(1), headers=UA, timeout=20).content
 
 
@@ -69,7 +68,7 @@ def _tikwm(url: str, *, inline=False):
                 [requests.get(i, headers=UA, timeout=15).content for i in imgs],
             )
         )
-    raise RuntimeError("tikwm: unknown type")
+    raise RuntimeError("tikwm: неизвестный формат")
 
 
 def _vxtt(url: str, *, inline=False):
@@ -83,12 +82,7 @@ def _vxtt(url: str, *, inline=False):
     ).json()
     if js.get("status") != "success":
         raise RuntimeError("vxtiktok: fail")
-    if js["data"]["type"] == "video":
-        return (
-            "video",
-            requests.get(js["data"]["video"], headers=UA, timeout=20).content,
-        )
-    raise RuntimeError("vxtiktok: only video supported")
+    return ("video", requests.get(js["data"]["video"], headers=UA, timeout=20).content)
 
 
 def _tikmate(url: str, *, inline=False):
@@ -113,7 +107,7 @@ def _ssstik(url: str, *, inline=False):
     )
     m = re.search(r'href=\"(https://[^"]+\.mp4)\"', r.text)
     if not m:
-        raise RuntimeError("ssstik: link not found")
+        raise RuntimeError("ssstik: ссылка не найдена")
     return "video", requests.get(m.group(1), headers=UA, timeout=20).content
 
 
@@ -129,7 +123,7 @@ def _douyin(url: str, *, inline=False):
     try:
         js = r.json()
     except ValueError:
-        raise RuntimeError("douyin: non-JSON response")
+        raise RuntimeError("douyin: non‑JSON ответ")
     if js.get("status_code") != 0:
         raise RuntimeError(f"douyin: {js.get('status_msg')}")
 
@@ -146,7 +140,7 @@ def _douyin(url: str, *, inline=False):
 
     src = d.get("nwm_video_url_HQ") or d.get("nwm_video_url") or d.get("wm_video_url")
     if not src:
-        raise RuntimeError("douyin: no media url")
+        raise RuntimeError("douyin: нет ссылки на медиа")
     return "video", requests.get(src, headers=UA, timeout=20).content
 
 
@@ -193,14 +187,21 @@ def _ytdlp(url: str, *, inline=False):
             f"best[ext=mp4][filesize<{limit}]/best[filesize<{limit}])"
         ),
     }
-    with YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=False)
 
-    if "url" not in info:
-        raise RuntimeError("video too big")
+    try:
+        with YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+    except (ytdlp_utils.DownloadError, ytdlp_utils.ExtractorError) as e:
+        raise RuntimeError(str(e).split("\n")[0]) from None
+    except Exception as e:
+        raise RuntimeError(f"yt‑dlp: {e}") from None
+
+    if not info.get("url"):
+        raise RuntimeError("ролик > 50 МБ — Bot API не примет")
+
     data = requests.get(info["url"], headers=UA, timeout=25).content
     if not data:
-        raise RuntimeError("empty download")
+        raise RuntimeError("не смог скачать (пустой ответ)")
     return "video", data
 
 
@@ -223,6 +224,7 @@ def fetch(url: str, *, inline: bool = False):
         try:
             return fn(url, inline=inline)
         except RuntimeError as e:
+
             if str(e) != "skip" and first_err is None:
                 first_err = e
         except Exception as e:
