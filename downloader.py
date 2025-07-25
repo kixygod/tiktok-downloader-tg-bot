@@ -1,93 +1,80 @@
-import logging, re, requests
-from yt_dlp import YoutubeDL, utils as ytdlp_utils
+import requests
+import re
+import logging
+from yt_dlp import YoutubeDL
 
 log = logging.getLogger(__name__)
 UA = {"User-Agent": "Mozilla/5.0"}
 
-YDL_BASE = {
-    "quiet": True,
-    "skip_download": True,
-    "socket_timeout": 10,
-    "nocheckcertificate": True,
-    "retries": 3,
-    "windows_filenames": True,
-}
-
-MAX_MB_INLINE = 49
-MAX_MB_CHAT = 49
-
 
 def _expand(url: str) -> str:
+    """Разворачивает vm.tiktok.com и tiktok.com/t/... в полный линк."""
     if re.match(r"https?://(?:vm\.)?tiktok\.com/(?:t|[A-Za-z0-9]+)", url):
         try:
-            return requests.head(url, allow_redirects=True, headers=UA, timeout=10).url
+            return requests.head(
+                url, allow_redirects=True, headers=UA, timeout=10
+            ).url
         except Exception as e:
             log.warning("_expand failed: %s", e)
     return url
 
 
-def _is_tiktok(url: str) -> bool:
-    return "tiktok.com" in url
-
-
-def _snap(url: str, *, inline=False):
-    if not _is_tiktok(url):
-        raise RuntimeError("skip")
+def _snap(url: str):
     r = requests.post(
         "https://snaptik.app/abc.php", data={"url": url}, headers=UA, timeout=12
     )
     if r.status_code != 200:
-        raise RuntimeError(f"SnapTik HTTP {r.status_code}")
+        raise RuntimeError(f"SnapTik HTTP {r.status_code}")
     m = re.search(r'(https://[^"]+snaptik[^"]+download[^"]+\.mp4)', r.text)
     if not m:
-        raise RuntimeError("SnapTik: ссылка не найдена")
+        raise RuntimeError("SnapTik: link not found")
     return "video", requests.get(m.group(1), headers=UA, timeout=20).content
 
 
-def _tikwm(url: str, *, inline=False):
-    if not _is_tiktok(url):
-        raise RuntimeError("skip")
-    js = requests.get(
-        "https://tikwm.com/api/", params={"url": url}, headers=UA, timeout=12
-    ).json()
+def _tikwm(url: str):
+    r = requests.get(
+        "https://tikwm.com/api/",
+        params={"url": url},
+        headers=UA,
+        timeout=12,
+    )
+    js = r.json()
     if js.get("code") != 0:
         raise RuntimeError(f"tikwm: {js.get('msg')}")
     d = js["data"]
 
-    if d.get("type") == "video":
+    t = d.get("type")
+    if t == "video":
         src = d["hdplay"] or d["play"]
         return "video", requests.get(src, headers=UA, timeout=20).content
 
-    imgs = d.get("images")
-    if imgs:
-        return (
-            ("photo_url", imgs)
-            if inline
-            else (
-                "photo",
-                [requests.get(i, headers=UA, timeout=15).content for i in imgs],
-            )
-        )
-    raise RuntimeError("tikwm: неизвестный формат")
+    # Tikwm иногда отдаёт photo-посты так:
+    #   {"type":"photo", "images":[...]}  или вообще без type
+    if t in ("image", "photo") or d.get("images"):
+        imgs = [
+            requests.get(i, headers=UA, timeout=15).content for i in d["images"]
+        ]
+        return "images", imgs
+
+    raise RuntimeError("tikwm: unknown type")
 
 
-def _vxtt(url: str, *, inline=False):
-    if not _is_tiktok(url):
-        raise RuntimeError("skip")
-    js = requests.get(
-        "https://ripple-vx-tiktok.vercel.app/api",
-        params={"url": url},
+def _vxtt(url: str):
+    r = requests.get(
+        f"https://ripple-vx-tiktok.vercel.app/api?url={url}",
         headers=UA,
         timeout=12,
-    ).json()
+    )
+    js = r.json()
     if js.get("status") != "success":
         raise RuntimeError("vxtiktok: fail")
-    return ("video", requests.get(js["data"]["video"], headers=UA, timeout=20).content)
+    if js["data"]["type"] == "video":
+        src = js["data"]["video"]
+        return "video", requests.get(src, headers=UA, timeout=20).content
+    raise RuntimeError("vxtiktok: only video supported")
 
 
-def _tikmate(url: str, *, inline=False):
-    if not _is_tiktok(url):
-        raise RuntimeError("skip")
+def _tikmate(url: str):
     i = url.rstrip("/").split("/")[-1].split("?")[0]
     token = requests.get(
         f"https://api.tikmate.app/api/lookup?id={i}", headers=UA, timeout=12
@@ -96,9 +83,7 @@ def _tikmate(url: str, *, inline=False):
     return "video", requests.get(dl, headers=UA, timeout=20).content
 
 
-def _ssstik(url: str, *, inline=False):
-    if not _is_tiktok(url):
-        raise RuntimeError("skip")
+def _ssstik(url: str):
     r = requests.post(
         "https://ssstik.io/abc?url=dl",
         data={"id": url, "locale": "en"},
@@ -107,13 +92,11 @@ def _ssstik(url: str, *, inline=False):
     )
     m = re.search(r'href=\"(https://[^"]+\.mp4)\"', r.text)
     if not m:
-        raise RuntimeError("ssstik: ссылка не найдена")
+        raise RuntimeError("ssstik: link not found")
     return "video", requests.get(m.group(1), headers=UA, timeout=20).content
 
 
-def _douyin(url: str, *, inline=False):
-    if "douyin." not in url:
-        raise RuntimeError("skip")
+def _douyin(url: str):
     r = requests.get(
         "https://api.douyin.wtf/api",
         params={"url": url, "minimal": "false"},
@@ -123,112 +106,61 @@ def _douyin(url: str, *, inline=False):
     try:
         js = r.json()
     except ValueError:
-        raise RuntimeError("douyin: non‑JSON ответ")
+        raise RuntimeError("douyin: non-JSON response")
+
     if js.get("status_code") != 0:
         raise RuntimeError(f"douyin: {js.get('status_msg')}")
-
     d = js["data"]
-    if d.get("images"):
-        return (
-            ("photo_url", d["images"])
-            if inline
-            else (
-                "photo",
-                [requests.get(i, headers=UA, timeout=15).content for i in d["images"]],
-            )
-        )
 
-    src = d.get("nwm_video_url_HQ") or d.get("nwm_video_url") or d.get("wm_video_url")
+    if d.get("images"):
+        imgs = [
+            requests.get(i, headers=UA, timeout=15).content for i in d["images"]
+        ]
+        return "images", imgs
+
+    src = (
+        d.get("nwm_video_url_HQ")
+        or d.get("nwm_video_url")
+        or d.get("wm_video_url")
+    )
     if not src:
-        raise RuntimeError("douyin: нет ссылки на медиа")
+        raise RuntimeError("douyin: no media url")
     return "video", requests.get(src, headers=UA, timeout=20).content
 
 
-def _insta(url: str, *, inline=False):
-    if "instagram.com" not in url:
-        raise RuntimeError("skip")
-    api = "https://ripple-instagram.vercel.app/api"
-    try:
-        js = requests.get(api, params={"url": url}, headers=UA, timeout=12).json()
-    except Exception:
-        raise RuntimeError("skip")
-
-    if js.get("status") != "success":
-        raise RuntimeError("skip")
-
-    d = js["data"]
-    if d["type"] == "video":
-        return "video", requests.get(d["video"], headers=UA, timeout=25).content
-
-    if d.get("images"):
-        return (
-            ("photo_url", d["images"])
-            if inline
-            else (
-                "photo",
-                [requests.get(i, headers=UA, timeout=15).content for i in d["images"]],
-            )
-        )
-
-    raise RuntimeError("insta: unsupported")
-
-
-def _ytdlp(url: str, *, inline=False):
-    if not any(
-        x in url for x in ("youtube.com", "youtu.be", "tiktok.com", "instagram.com")
-    ):
-        raise RuntimeError("skip")
-
-    limit = (MAX_MB_INLINE if inline else MAX_MB_CHAT) * 1024 * 1024
-    ydl_opts = {
-        **YDL_BASE,
-        "format": (
-            f"(bestvideo[ext=mp4][filesize<{limit}]+bestaudio[ext=m4a]/"
-            f"best[ext=mp4][filesize<{limit}]/best[filesize<{limit}])"
-        ),
-    }
-
-    try:
-        with YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-    except (ytdlp_utils.DownloadError, ytdlp_utils.ExtractorError) as e:
-        raise RuntimeError(str(e).split("\n")[0]) from None
-    except Exception as e:
-        raise RuntimeError(f"yt‑dlp: {e}") from None
-
-    if not info.get("url"):
-        raise RuntimeError("ролик > 50 МБ — Bot API не примет")
-
-    data = requests.get(info["url"], headers=UA, timeout=25).content
-    if not data:
-        raise RuntimeError("не смог скачать (пустой ответ)")
-    return "video", data
+def _ytdlp(url: str):
+    with YoutubeDL({"quiet": True, "skip_download": True}) as ydl:
+        info = ydl.extract_info(url, download=False)
+    if info.get("ext") == "mp4":
+        src = info["url"]
+        return "video", requests.get(src, headers=UA, timeout=25).content
+    if info.get("_type") == "playlist":
+        imgs = [
+            requests.get(e["url"], headers=UA, timeout=15).content
+            for e in info["entries"]
+        ]
+        return "images", imgs
+    raise RuntimeError("yt-dlp: unsupported")
 
 
 DOWNLOADERS = (
-    _insta,
-    _ytdlp,
     _snap,
     _tikwm,
     _vxtt,
     _tikmate,
     _ssstik,
-    _douyin,
+    _douyin,   # ← фото/видео без ватермарки
+    _ytdlp,
 )
 
 
-def fetch(url: str, *, inline: bool = False):
+def fetch(url: str):
     url = _expand(url)
-    first_err = None
+    last = None
     for fn in DOWNLOADERS:
         try:
-            return fn(url, inline=inline)
-        except RuntimeError as e:
-
-            if str(e) != "skip" and first_err is None:
-                first_err = e
+            return fn(url)
         except Exception as e:
+            last = e
             log.warning("%s failed: %s", fn.__name__, e)
-            if first_err is None:
-                first_err = e
-    raise first_err or RuntimeError("all downloaders failed")
+    raise last or RuntimeError("all downloaders failed")

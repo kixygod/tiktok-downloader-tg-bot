@@ -1,14 +1,15 @@
 version: "3.8"
+
 services:
   tiktok-bot:
     build: .
     env_file: .env
     volumes:
-      - /tmp:/tmp
-      - ./data:/app/data
+      - /tmp:/tmp                # временные файлы для видео/картинок
     restart: unless-stopped
     cap_add:
-      - NET_ADMIN
+      - NET_ADMIN               # нужно wg-quick внутри контейнера
     dns:
       - 1.1.1.1
       - 8.8.8.8
+
