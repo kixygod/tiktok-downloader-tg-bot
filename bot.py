@@ -14,19 +14,19 @@ from telegram.error import NetworkError, TimedOut
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("ttbot")
-tiktok_re = re.compile(r"https?://(?:www\.)?(?:vm\.)?tiktok\.com/[^\s]+")
+tiktok_re = re.compile(r"https?://(?:[a-z]+\.)?tiktok\.com/[^\s]+")
 
 
 async def cmd_start(update: Update, _):
-    await update.effective_message.reply_text("Присылай ссылки на TikTok – скачаю видео/картинки.")
+    await update.effective_message.reply_text(
+        "Присылай ссылки на TikTok – скачаю видео/картинки."
+    )
 
 
 async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     for url in tiktok_re.findall(msg.text_html or ""):
-        typing = asyncio.create_task(
-            _keep_typing(context.bot, msg.chat_id)
-        )
+        typing = asyncio.create_task(_keep_typing(context.bot, msg.chat_id))
         try:
             kind, data = await asyncio.to_thread(fetch, url)
         except Exception as e:
@@ -39,7 +39,8 @@ async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if kind == "video":
             with tempfile.NamedTemporaryFile("wb", suffix=".mp4") as tf:
-                tf.write(data); tf.flush()
+                tf.write(data)
+                tf.flush()
                 await msg.chat.send_action(ChatAction.UPLOAD_VIDEO)
                 await msg.reply_video(
                     open(tf.name, "rb"),
@@ -50,12 +51,11 @@ async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.chat.send_action(ChatAction.UPLOAD_PHOTO)
             for i in range(0, len(data), 10):
                 media = []
-                for img in data[i:i + 10]:
-                    buf = io.BytesIO(img); buf.name = "img.jpg"
+                for img in data[i : i + 10]:
+                    buf = io.BytesIO(img)
+                    buf.name = "img.jpg"
                     media.append(InputMediaPhoto(media=buf))
-                await msg.reply_media_group(
-                    media=media, reply_to_message_id=msg.id
-                )
+                await msg.reply_media_group(media=media, reply_to_message_id=msg.id)
 
 
 async def _keep_typing(bot, chat_id):
