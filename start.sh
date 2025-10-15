@@ -13,7 +13,7 @@ python3 generate_config.py "$VLESS_URL"
 
 # Запускаем v2ray в фоновом режиме
 echo "Starting v2ray..."
-v2ray -config /app/v2ray-config.json &
+v2ray run -config /app/v2ray-config.json &
 V2RAY_PID=$!
 
 # Чистая остановка по Ctrl-C / docker stop

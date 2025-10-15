@@ -59,11 +59,19 @@ def create_v2ray_config(vless_data):
         if "host" in vless_data["params"]:
             ws_settings["headers"]["Host"] = vless_data["params"]["host"]
 
-    # Настройки для TLS
+    # Настройки для TLS/Reality
     tls_settings = {}
     if security == "tls":
         tls_settings = {
             "serverName": vless_data["params"].get("sni", vless_data["host"])
+        }
+    elif security == "reality":
+        tls_settings = {
+            "serverName": vless_data["params"].get("sni", vless_data["host"]),
+            "fingerprint": vless_data["params"].get("fp", "chrome"),
+            "publicKey": vless_data["params"].get("pbk", ""),
+            "shortId": vless_data["params"].get("sid", ""),
+            "spiderX": vless_data["params"].get("spx", "/"),
         }
 
     config = {
@@ -84,11 +92,29 @@ def create_v2ray_config(vless_data):
                         {
                             "address": vless_data["host"],
                             "port": vless_data["port"],
-                            "users": [{"id": vless_data["uuid"], "encryption": "none"}],
+                            "users": [
+                                {
+                                    "id": vless_data["uuid"],
+                                    "encryption": "none",
+                                    "flow": (
+                                        vless_data["params"].get("flow", "")
+                                        if security == "reality"
+                                        else None
+                                    ),
+                                }
+                            ],
                         }
                     ]
                 },
-                "streamSettings": {"network": network, "security": security},
+                "streamSettings": {
+                    "network": network,
+                    "security": security,
+                    "xtlsSettings": (
+                        {}
+                        if security == "reality" and vless_data["params"].get("flow")
+                        else None
+                    ),
+                },
             },
             {"protocol": "freedom", "settings": {}, "tag": "direct"},
         ],
@@ -108,10 +134,20 @@ def create_v2ray_config(vless_data):
     if network == "ws":
         config["outbounds"][0]["streamSettings"]["wsSettings"] = ws_settings
 
-    # Добавляем настройки TLS
-    if security == "tls":
+    # Добавляем настройки TLS/Reality
+    if security in ["tls", "reality"]:
         config["outbounds"][0]["streamSettings"]["tlsSettings"] = tls_settings
 
+    # Очищаем None значения из конфигурации
+    def clean_none_values(obj):
+        if isinstance(obj, dict):
+            return {k: clean_none_values(v) for k, v in obj.items() if v is not None}
+        elif isinstance(obj, list):
+            return [clean_none_values(item) for item in obj if item is not None]
+        else:
+            return obj
+
+    config = clean_none_values(config)
     return config
 
 
