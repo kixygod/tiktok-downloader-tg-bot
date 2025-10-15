@@ -22,11 +22,8 @@
 git clone https://github.com/kixygod/tiktok-downloader-tg-bot.git
 cd tiktok-downloader-tg-bot
 
-# заполните токен в .env
-cp .env.example .env   # редактируем TELEGRAM_TOKEN
-
-# (опционально) если нужен обход блокировок:
-# cp my-wg.conf vpn.conf   # ваш WireGuard-конфиг
+# заполните токен и VLESS URL в .env
+cp .env.example .env   # редактируем TELEGRAM_TOKEN и VLESS_URL
 
 docker compose up --build -d
 docker compose logs -f     # смотреть логи
@@ -39,10 +36,12 @@ docker compose logs -f     # смотреть логи
 | переменная       | значение                           |
 | ---------------- | ---------------------------------- |
 | `TELEGRAM_TOKEN` | токен вашего Telegram-бота         |
+| `VLESS_URL`      | VLESS URL для VPN подключения      |
 | `TZ` *(опц.)*    | тайм-зона контейнера, дефолт `UTC` |
 
 ```dotenv
 TELEGRAM_TOKEN=80******40:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+VLESS_URL=vless://********-****-****-****-*********************************************************************
 TZ=Europe/Moscow
 ```
 
@@ -51,7 +50,7 @@ TZ=Europe/Moscow
 ## Интернет в РФ
 
 TikTok-домены могут быть недоступны.
-Скопируйте рабочий **WireGuard**-конфиг в корень проекта под именем `vpn.conf` — скрипт `start.sh` поднимет интерфейс `vpn` внутри контейнера перед запуском бота.
+Используйте VLESS прокси для обхода блокировок. Укажите ваш VLESS URL в переменной окружения `VLESS_URL` в файле `.env`.
 
 ---
 
@@ -60,9 +59,10 @@ TikTok-домены могут быть недоступны.
 ```
 bot.py                – логика Telegram, media-groups, typing-status
 downloader.py         – 6 API + yt-dlp, видео и фото
-Dockerfile
-docker-compose.yml    – монтирует .env и vpn.conf
-start.sh              – опц. WireGuard + запуск бота
+Dockerfile            – установка v2ray-core и Python зависимостей
+docker-compose.yml    – монтирует .env и переменные окружения
+start.sh              – запуск v2ray + запуск бота
+generate_config.py    – генерация конфигурации v2ray из VLESS URL
 ```
 
 ---
@@ -70,7 +70,7 @@ start.sh              – опц. WireGuard + запуск бота
 ## Полезные команды
 
 ```bash
-docker compose exec bot bash   # зайти в контейнер
-docker compose restart bot     # перезапуск
-docker compose down            # остановить и удалить
+docker compose exec tiktok-bot bash   # зайти в контейнер
+docker compose restart tiktok-bot     # перезапуск
+docker compose down                   # остановить и удалить
 ```

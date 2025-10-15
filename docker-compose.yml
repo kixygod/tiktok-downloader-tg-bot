@@ -4,12 +4,11 @@ services:
   tiktok-bot:
     build: .
     env_file: .env
+    environment:
+      - VLESS_URL=${VLESS_URL}
     volumes:
-      - /tmp:/tmp                # временные файлы для видео/картинок
+      - /tmp:/tmp # временные файлы для видео/картинок
     restart: unless-stopped
-    cap_add:
-      - NET_ADMIN               # нужно wg-quick внутри контейнера
     dns:
       - 1.1.1.1
       - 8.8.8.8
-

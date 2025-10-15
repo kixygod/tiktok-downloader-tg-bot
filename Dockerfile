@@ -4,14 +4,18 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# WireGuard userspace tools
-RUN apt-get update && apt-get install -y wireguard-tools iproute2 openresolv && rm -rf /var/lib/apt/lists/*
+# Установка v2ray-core
+RUN apt-get update && apt-get install -y curl unzip && \
+  curl -L https://github.com/v2fly/v2ray-core/releases/latest/download/v2ray-linux-64.zip -o v2ray.zip && \
+  unzip v2ray.zip -d /usr/bin/ && \
+  chmod +x /usr/bin/v2ray /usr/bin/v2ctl && \
+  rm v2ray.zip && \
+  apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Копируем проект
 COPY bot.py .
 COPY downloader.py .
-COPY start.sh vpn.conf ./
-RUN chown root:root /app/vpn.conf && chmod 600 /app/vpn.conf
+COPY start.sh generate_config.py ./
 RUN chmod +x start.sh
 
 CMD ["./start.sh"]
