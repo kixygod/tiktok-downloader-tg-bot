@@ -81,7 +81,7 @@ def main():
     app = (
         Application.builder()
         .token(TOKEN)
-        .proxy_url(proxy_url)
+        .proxy(proxy_url)
         .http_version("1.1")
         .get_updates_http_version("1.1")
         .read_timeout(20)

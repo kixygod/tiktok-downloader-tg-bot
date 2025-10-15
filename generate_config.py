@@ -170,7 +170,7 @@ def main():
         with open("/app/v2ray-config.json", "w") as f:
             json.dump(config, f, indent=2)
 
-        print("v2ray configuration generated successfully!")
+        print("xray configuration generated successfully!")
 
     except Exception as e:
         print(f"Error: {e}")

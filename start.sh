@@ -7,13 +7,13 @@ if [ -z "$VLESS_URL" ]; then
     exit 1
 fi
 
-# Генерируем конфигурацию v2ray из VLESS URL
-echo "Generating v2ray configuration from VLESS URL..."
+# Генерируем конфигурацию xray из VLESS URL
+echo "Generating xray configuration from VLESS URL..."
 python3 generate_config.py "$VLESS_URL"
 
-# Запускаем v2ray в фоновом режиме
-echo "Starting v2ray..."
-v2ray run -config /app/v2ray-config.json &
+# Запускаем xray в фоновом режиме
+echo "Starting xray..."
+xray run -config /app/v2ray-config.json &
 V2RAY_PID=$!
 
 # Чистая остановка по Ctrl-C / docker stop
