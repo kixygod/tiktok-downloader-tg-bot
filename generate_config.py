@@ -61,12 +61,13 @@ def create_v2ray_config(vless_data):
 
     # Настройки для TLS/Reality
     tls_settings = {}
+    reality_settings = {}
     if security == "tls":
         tls_settings = {
             "serverName": vless_data["params"].get("sni", vless_data["host"])
         }
     elif security == "reality":
-        tls_settings = {
+        reality_settings = {
             "serverName": vless_data["params"].get("sni", vless_data["host"]),
             "fingerprint": vless_data["params"].get("fp", "chrome"),
             "publicKey": vless_data["params"].get("pbk", ""),
@@ -135,8 +136,10 @@ def create_v2ray_config(vless_data):
         config["outbounds"][0]["streamSettings"]["wsSettings"] = ws_settings
 
     # Добавляем настройки TLS/Reality
-    if security in ["tls", "reality"]:
+    if security == "tls":
         config["outbounds"][0]["streamSettings"]["tlsSettings"] = tls_settings
+    elif security == "reality":
+        config["outbounds"][0]["streamSettings"]["realitySettings"] = reality_settings
 
     # Очищаем None значения из конфигурации
     def clean_none_values(obj):
