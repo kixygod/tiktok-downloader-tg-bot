@@ -98,8 +98,12 @@ def create_v2ray_config(vless_data):
                                     "id": vless_data["uuid"],
                                     "encryption": "none",
                                     "flow": (
-                                        vless_data["params"].get("flow", "")
+                                        vless_data["params"]
+                                        .get("flow", "")
+                                        .split("#")[0]
+                                        .strip()
                                         if security == "reality"
+                                        and vless_data["params"].get("flow")
                                         else None
                                     ),
                                 }
