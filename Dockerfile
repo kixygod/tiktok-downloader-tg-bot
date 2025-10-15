@@ -8,7 +8,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 RUN apt-get update && apt-get install -y curl unzip && \
   curl -L https://github.com/v2fly/v2ray-core/releases/latest/download/v2ray-linux-64.zip -o v2ray.zip && \
   unzip v2ray.zip -d /usr/bin/ && \
-  chmod +x /usr/bin/v2ray /usr/bin/v2ctl && \
+  chmod +x /usr/bin/v2ray && \
   rm v2ray.zip && \
   apt-get clean && rm -rf /var/lib/apt/lists/*
 
