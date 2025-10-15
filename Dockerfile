@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y wireguard-tools iproute2 openresolv && 
 COPY bot.py .
 COPY downloader.py .
 COPY start.sh vpn.conf ./
+RUN chown root:root /app/vpn.conf && chmod 600 /app/vpn.conf
 RUN chmod +x start.sh
 
 CMD ["./start.sh"]
