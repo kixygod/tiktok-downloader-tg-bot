@@ -1,0 +1,817 @@
+<!DOCTYPE html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <title>TikTok Bot Dashboard</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      :root {
+        --bg-primary: #ffffff;
+        --bg-secondary: #f8fafc;
+        --bg-tertiary: #f1f5f9;
+        --text-primary: #1e293b;
+        --text-secondary: #64748b;
+        --text-muted: #94a3b8;
+        --border-color: #e2e8f0;
+        --accent-primary: #3b82f6;
+        --accent-secondary: #10b981;
+        --accent-danger: #ef4444;
+        --accent-warning: #f59e0b;
+        --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+        --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1),
+          0 2px 4px -2px rgb(0 0 0 / 0.1);
+        --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.1),
+          0 4px 6px -4px rgb(0 0 0 / 0.1);
+        --radius-sm: 0.375rem;
+        --radius-md: 0.5rem;
+        --radius-lg: 0.75rem;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg-primary: #0f172a;
+          --bg-secondary: #1e293b;
+          --bg-tertiary: #334155;
+          --text-primary: #f1f5f9;
+          --text-secondary: #cbd5e1;
+          --text-muted: #94a3b8;
+          --border-color: #475569;
+          --accent-primary: #60a5fa;
+          --accent-secondary: #34d399;
+          --accent-danger: #f87171;
+          --accent-warning: #fbbf24;
+          --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.3);
+          --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.3),
+            0 2px 4px -2px rgb(0 0 0 / 0.3);
+          --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.3),
+            0 4px 6px -4px rgb(0 0 0 / 0.3);
+        }
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto",
+          "Oxygen", "Ubuntu", "Cantarell", sans-serif;
+        margin: 0;
+        padding: 0;
+        background-color: var(--bg-secondary);
+        color: var(--text-primary);
+        line-height: 1.6;
+        font-size: 14px;
+      }
+
+      .container {
+        max-width: 1400px;
+        margin: 0 auto;
+        padding: 1.5rem;
+      }
+
+      .header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 2rem;
+        padding-bottom: 1rem;
+        border-bottom: 1px solid var(--border-color);
+      }
+
+      .header h1 {
+        margin: 0;
+        font-size: 1.875rem;
+        font-weight: 700;
+        color: var(--text-primary);
+      }
+
+      .controls {
+        display: flex;
+        gap: 0.75rem;
+        align-items: center;
+      }
+
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.625rem 1rem;
+        border: none;
+        border-radius: var(--radius-md);
+        font-size: 0.875rem;
+        font-weight: 500;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        text-decoration: none;
+        background-color: var(--bg-tertiary);
+        color: var(--text-primary);
+        border: 1px solid var(--border-color);
+      }
+
+      .btn:hover {
+        background-color: var(--accent-primary);
+        color: white;
+        border-color: var(--accent-primary);
+        transform: translateY(-1px);
+        box-shadow: var(--shadow-md);
+      }
+
+      .btn:active {
+        transform: translateY(0);
+      }
+
+      .status-bar {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        font-size: 0.875rem;
+        color: var(--text-secondary);
+        margin-bottom: 1.5rem;
+      }
+
+      .status-indicator {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background-color: var(--accent-secondary);
+      }
+
+      .status-indicator.offline {
+        background-color: var(--accent-danger);
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        gap: 1.5rem;
+        margin-bottom: 2rem;
+      }
+
+      .charts-grid {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 1.5rem;
+        margin-bottom: 2rem;
+      }
+
+      .card {
+        background-color: var(--bg-primary);
+        border: 1px solid var(--border-color);
+        border-radius: var(--radius-lg);
+        padding: 1.5rem;
+        box-shadow: var(--shadow-sm);
+        transition: all 0.2s ease;
+      }
+
+      .card:hover {
+        box-shadow: var(--shadow-md);
+        transform: translateY(-2px);
+      }
+
+      .card-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 1rem;
+      }
+
+      .card-title {
+        font-size: 1rem;
+        font-weight: 600;
+        color: var(--text-primary);
+        margin: 0;
+      }
+
+      .card-icon {
+        width: 20px;
+        height: 20px;
+        opacity: 0.6;
+      }
+
+      .stat-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 1rem;
+      }
+
+      .stat-item {
+        text-align: center;
+        padding: 1rem;
+        background-color: var(--bg-secondary);
+        border-radius: var(--radius-md);
+        border: 1px solid var(--border-color);
+      }
+
+      .stat-value {
+        font-size: 2rem;
+        font-weight: 700;
+        color: var(--text-primary);
+        margin-bottom: 0.25rem;
+      }
+
+      .stat-label {
+        font-size: 0.75rem;
+        font-weight: 500;
+        color: var(--text-muted);
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+
+      .settings-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+        gap: 1rem;
+      }
+
+      .setting-item {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 0.75rem 0;
+        border-bottom: 1px solid var(--border-color);
+      }
+
+      .setting-item:last-child {
+        border-bottom: none;
+      }
+
+      .setting-label {
+        font-weight: 500;
+        color: var(--text-primary);
+      }
+
+      .setting-value {
+        color: var(--text-secondary);
+        font-size: 0.875rem;
+      }
+
+      .error {
+        color: var(--accent-danger);
+        font-size: 0.875rem;
+        margin-top: 0.5rem;
+        padding: 0.5rem;
+        background-color: rgba(239, 68, 68, 0.1);
+        border-radius: var(--radius-sm);
+        border: 1px solid rgba(239, 68, 68, 0.2);
+      }
+
+      .loading {
+        opacity: 0.6;
+        pointer-events: none;
+      }
+
+      .chart-container {
+        margin-top: 1rem;
+      }
+
+      .chart {
+        width: 100%;
+        height: 300px;
+        background-color: var(--bg-secondary);
+        border-radius: var(--radius-md);
+        border: 1px solid var(--border-color);
+        position: relative;
+        overflow: hidden;
+      }
+
+      .chart-svg {
+        width: 100%;
+        height: 100%;
+      }
+
+      .chart-line {
+        fill: none;
+        stroke: var(--accent-primary);
+        stroke-width: 2;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+
+      .chart-area {
+        fill: var(--accent-primary);
+        opacity: 0.1;
+      }
+
+      .chart-axis {
+        stroke: var(--border-color);
+        stroke-width: 1;
+      }
+
+      .chart-text {
+        font-size: 12px;
+        fill: var(--text-muted);
+      }
+
+      .chart-title {
+        font-size: 0.875rem;
+        font-weight: 600;
+        color: var(--text-primary);
+        margin-bottom: 0.5rem;
+      }
+
+      .chart-subtitle {
+        font-size: 0.75rem;
+        color: var(--text-muted);
+        margin-bottom: 1rem;
+      }
+
+      @media (max-width: 768px) {
+        .container {
+          padding: 1rem;
+        }
+
+        .header {
+          flex-direction: column;
+          gap: 1rem;
+          align-items: stretch;
+        }
+
+        .controls {
+          justify-content: center;
+        }
+
+        .grid {
+          grid-template-columns: 1fr;
+          gap: 1rem;
+        }
+
+        .charts-grid {
+          grid-template-columns: 1fr;
+          gap: 1rem;
+        }
+
+        .stat-grid {
+          grid-template-columns: repeat(2, 1fr);
+        }
+
+        .settings-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .chart {
+          height: 250px;
+        }
+      }
+
+      @media (max-width: 480px) {
+        .stat-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .stat-value {
+          font-size: 1.5rem;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="header">
+        <h1>📊 TikTok Bot Dashboard</h1>
+        <div class="controls">
+          <button class="btn" onclick="refreshStats()">
+            <span>🔄</span>
+            <span>Обновить</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="status-bar">
+        <span class="status-indicator" id="statusIndicator"></span>
+        <span
+          >Последнее обновление: <span id="updateTime">загрузка...</span></span
+        >
+      </div>
+
+      <div class="grid">
+        <div class="card">
+          <div class="card-header">
+            <h2 class="card-title">📈 Статистика</h2>
+            <span class="card-icon">📊</span>
+          </div>
+          <div class="stat-grid">
+            <div class="stat-item">
+              <div class="stat-value" id="daily">-</div>
+              <div class="stat-label">За 24ч</div>
+            </div>
+            <div class="stat-item">
+              <div class="stat-value" id="weekly">-</div>
+              <div class="stat-label">За 7д</div>
+            </div>
+            <div class="stat-item">
+              <div class="stat-value" id="monthly">-</div>
+              <div class="stat-label">За 30д</div>
+            </div>
+            <div class="stat-item">
+              <div class="stat-value" id="total">-</div>
+              <div class="stat-label">Всего</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h2 class="card-title">📊 Производительность</h2>
+            <span class="card-icon">⚡</span>
+          </div>
+          <div class="stat-grid">
+            <div class="stat-item">
+              <div class="stat-value" id="traffic">-</div>
+              <div class="stat-label">Трафик (MB)</div>
+            </div>
+            <div class="stat-item">
+              <div class="stat-value" id="avgDuration">-</div>
+              <div class="stat-label">Среднее время (ms)</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h2 class="card-title">⚙️ Настройки</h2>
+            <span class="card-icon">🔧</span>
+          </div>
+          <div class="settings-grid">
+            <div class="setting-item">
+              <span class="setting-label">Лимит размера</span>
+              <span class="setting-value" id="sizeLimit">50 MB</span>
+            </div>
+            <div class="setting-item">
+              <span class="setting-label">Прокси</span>
+              <span class="setting-value" id="proxyStatus">❌ Отключен</span>
+            </div>
+            <div class="setting-item">
+              <span class="setting-label">Статус</span>
+              <span class="setting-value" style="color: var(--accent-secondary)"
+                >🟢 Работает</span
+              >
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="charts-grid">
+        <div class="card">
+          <div class="card-header">
+            <h2 class="card-title">📈 Активность за 24 часа</h2>
+            <span class="card-icon">⏰</span>
+          </div>
+          <div class="chart-title">Запросы по часам</div>
+          <div class="chart-subtitle">Количество обработанных ссылок</div>
+          <div class="chart-container">
+            <div class="chart" id="hourlyChart">
+              <svg class="chart-svg" viewBox="0 0 800 300">
+                <text x="400" y="150" class="chart-text" text-anchor="middle">
+                  Загрузка данных...
+                </text>
+              </svg>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h2 class="card-title">📊 Активность за 7 дней</h2>
+            <span class="card-icon">📅</span>
+          </div>
+          <div class="chart-title">Запросы по дням</div>
+          <div class="chart-subtitle">Количество обработанных ссылок</div>
+          <div class="chart-container">
+            <div class="chart" id="dailyChart">
+              <svg class="chart-svg" viewBox="0 0 800 300">
+                <text x="400" y="150" class="chart-text" text-anchor="middle">
+                  Загрузка данных...
+                </text>
+              </svg>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h2 class="card-title">⚡ Производительность</h2>
+            <span class="card-icon">🚀</span>
+          </div>
+          <div class="chart-title">Время обработки по дням</div>
+          <div class="chart-subtitle">Среднее время в миллисекундах</div>
+          <div class="chart-container">
+            <div class="chart" id="performanceChart">
+              <svg class="chart-svg" viewBox="0 0 800 300">
+                <text x="400" y="150" class="chart-text" text-anchor="middle">
+                  Загрузка данных...
+                </text>
+              </svg>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      let autoRefreshInterval = null;
+
+      async function fetchStats() {
+        try {
+          console.log("Fetching stats...");
+          const response = await fetch("/api/stats");
+          if (!response.ok) throw new Error("Failed to fetch stats");
+
+          const data = await response.json();
+          console.log("Stats data:", data);
+
+          // Обновляем значения
+          document.getElementById("daily").textContent = data.daily;
+          document.getElementById("weekly").textContent = data.weekly;
+          document.getElementById("monthly").textContent = data.monthly;
+          document.getElementById("total").textContent = data.total;
+          document.getElementById("traffic").textContent = data.traffic;
+          document.getElementById("avgDuration").textContent = data.avgDuration;
+
+          // Обновляем время
+          document.getElementById("updateTime").textContent =
+            new Date().toLocaleString();
+
+          // Обновляем статус
+          document.getElementById("statusIndicator").className =
+            "status-indicator";
+
+          // Убираем ошибки
+          document.querySelectorAll(".error").forEach((el) => el.remove());
+        } catch (error) {
+          console.error("Error fetching stats:", error);
+          document.getElementById("statusIndicator").className =
+            "status-indicator offline";
+
+          const errorEl = document.createElement("div");
+          errorEl.className = "error";
+          errorEl.textContent = "Ошибка загрузки данных: " + error.message;
+          document.querySelector(".status-bar").appendChild(errorEl);
+        }
+      }
+
+      async function fetchCharts() {
+        try {
+          console.log("Fetching charts...");
+          const response = await fetch("/api/charts");
+          if (!response.ok) throw new Error("Failed to fetch charts");
+
+          const data = await response.json();
+          console.log("Charts data:", data);
+
+          // Обновляем графики
+          updateHourlyChart(data.hourly);
+          updateDailyChart(data.daily);
+          updatePerformanceChart(data.daily);
+        } catch (error) {
+          console.error("Error fetching charts:", error);
+        }
+      }
+
+      function updateHourlyChart(data) {
+        const svg = document.querySelector("#hourlyChart .chart-svg");
+        if (!data || data.length === 0) {
+          svg.innerHTML =
+            '<text x="400" y="150" class="chart-text" text-anchor="middle">Нет данных</text>';
+          return;
+        }
+
+        const width = 800;
+        const height = 300;
+        const padding = 60;
+        const chartWidth = width - 2 * padding;
+        const chartHeight = height - 2 * padding;
+
+        const maxCount = Math.max(...data.map((d) => d.count));
+        const stepX = data.length > 1 ? chartWidth / (data.length - 1) : 0;
+
+        let pathData = "";
+        let areaData = "";
+
+        data.forEach((point, index) => {
+          const x =
+            data.length > 1
+              ? padding + index * stepX
+              : padding + chartWidth / 2;
+          const y =
+            padding + chartHeight - (point.count / maxCount) * chartHeight;
+
+          if (index === 0) {
+            pathData += "M " + x + " " + y;
+            areaData +=
+              "M " + x + " " + (padding + chartHeight) + " L " + x + " " + y;
+          } else {
+            pathData += " L " + x + " " + y;
+            areaData += " L " + x + " " + y;
+          }
+        });
+
+        areaData +=
+          " L " + (padding + chartWidth) + " " + (padding + chartHeight) + " Z";
+
+        svg.innerHTML =
+          '<rect x="' +
+          padding +
+          '" y="' +
+          padding +
+          '" width="' +
+          chartWidth +
+          '" height="' +
+          chartHeight +
+          '" fill="none" stroke="var(--border-color)" stroke-width="1"/>' +
+          '<path d="' +
+          areaData +
+          '" class="chart-area"/>' +
+          '<path d="' +
+          pathData +
+          '" class="chart-line"/>' +
+          data
+            .map((point, index) => {
+              const x =
+                data.length > 1
+                  ? padding + index * stepX
+                  : padding + chartWidth / 2;
+              const y = padding + chartHeight + 15;
+              return (
+                '<text x="' +
+                x +
+                '" y="' +
+                y +
+                '" class="chart-text" text-anchor="middle">' +
+                point.hour +
+                "</text>"
+              );
+            })
+            .join("");
+      }
+
+      function updateDailyChart(data) {
+        const svg = document.querySelector("#dailyChart .chart-svg");
+        if (!data || data.length === 0) {
+          svg.innerHTML =
+            '<text x="400" y="150" class="chart-text" text-anchor="middle">Нет данных</text>';
+          return;
+        }
+
+        const width = 800;
+        const height = 300;
+        const padding = 60;
+        const chartWidth = width - 2 * padding;
+        const chartHeight = height - 2 * padding;
+
+        const maxCount = Math.max(...data.map((d) => d.count));
+        const stepX = data.length > 1 ? chartWidth / (data.length - 1) : 0;
+
+        let pathData = "";
+        let areaData = "";
+
+        data.forEach((point, index) => {
+          const x =
+            data.length > 1
+              ? padding + index * stepX
+              : padding + chartWidth / 2;
+          const y =
+            padding + chartHeight - (point.count / maxCount) * chartHeight;
+
+          if (index === 0) {
+            pathData += "M " + x + " " + y;
+            areaData +=
+              "M " + x + " " + (padding + chartHeight) + " L " + x + " " + y;
+          } else {
+            pathData += " L " + x + " " + y;
+            areaData += " L " + x + " " + y;
+          }
+        });
+
+        areaData +=
+          " L " + (padding + chartWidth) + " " + (padding + chartHeight) + " Z";
+
+        svg.innerHTML =
+          '<rect x="' +
+          padding +
+          '" y="' +
+          padding +
+          '" width="' +
+          chartWidth +
+          '" height="' +
+          chartHeight +
+          '" fill="none" stroke="var(--border-color)" stroke-width="1"/>' +
+          '<path d="' +
+          areaData +
+          '" class="chart-area"/>' +
+          '<path d="' +
+          pathData +
+          '" class="chart-line"/>' +
+          data
+            .map((point, index) => {
+              const x =
+                data.length > 1
+                  ? padding + index * stepX
+                  : padding + chartWidth / 2;
+              const y = padding + chartHeight + 15;
+              const date = new Date(point.date).toLocaleDateString("ru", {
+                month: "short",
+                day: "numeric",
+              });
+              return (
+                '<text x="' +
+                x +
+                '" y="' +
+                y +
+                '" class="chart-text" text-anchor="middle">' +
+                date +
+                "</text>"
+              );
+            })
+            .join("");
+      }
+
+      function updatePerformanceChart(data) {
+        const svg = document.querySelector("#performanceChart .chart-svg");
+        if (!data || data.length === 0) {
+          svg.innerHTML =
+            '<text x="400" y="150" class="chart-text" text-anchor="middle">Нет данных</text>';
+          return;
+        }
+
+        const width = 800;
+        const height = 300;
+        const padding = 60;
+        const chartWidth = width - 2 * padding;
+        const chartHeight = height - 2 * padding;
+
+        const durations = data.map((d) => d.avg_duration || 0);
+        const maxDuration = Math.max(...durations);
+        const stepX = data.length > 1 ? chartWidth / (data.length - 1) : 0;
+
+        let pathData = "";
+
+        data.forEach((point, index) => {
+          const x =
+            data.length > 1
+              ? padding + index * stepX
+              : padding + chartWidth / 2;
+          const y =
+            padding +
+            chartHeight -
+            ((point.avg_duration || 0) / maxDuration) * chartHeight;
+
+          if (index === 0) {
+            pathData += "M " + x + " " + y;
+          } else {
+            pathData += " L " + x + " " + y;
+          }
+        });
+
+        svg.innerHTML =
+          '<rect x="' +
+          padding +
+          '" y="' +
+          padding +
+          '" width="' +
+          chartWidth +
+          '" height="' +
+          chartHeight +
+          '" fill="none" stroke="var(--border-color)" stroke-width="1"/>' +
+          '<path d="' +
+          pathData +
+          '" class="chart-line" stroke="var(--accent-secondary)"/>' +
+          data
+            .map((point, index) => {
+              const x =
+                data.length > 1
+                  ? padding + index * stepX
+                  : padding + chartWidth / 2;
+              const y = padding + chartHeight + 15;
+              const date = new Date(point.date).toLocaleDateString("ru", {
+                month: "short",
+                day: "numeric",
+              });
+              return (
+                '<text x="' +
+                x +
+                '" y="' +
+                y +
+                '" class="chart-text" text-anchor="middle">' +
+                date +
+                "</text>"
+              );
+            })
+            .join("");
+      }
+
+      function refreshStats() {
+        fetchStats();
+        fetchCharts();
+      }
+
+      // Загружаем данные при старте
+      window.onload = function () {
+        console.log("Dashboard loaded, starting refresh...");
+        refreshStats();
+        // Автоматически обновляем каждые 3 секунды
+        autoRefreshInterval = setInterval(refreshStats, 3000);
+        console.log("Auto-refresh started every 3 seconds");
+      };
+    </script>
+  </body>
+</html>

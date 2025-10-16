@@ -1,0 +1,30 @@
+{
+  "name": "tiktok-bot",
+  "version": "1.0.0",
+  "description": "Telegram bot for TikTok video processing",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "tsx src/index.ts",
+    "build": "tsc",
+    "type-check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "grammy": "^1.20.3",
+    "@grammyjs/runner": "^1.0.4",
+    "fastify": "^4.25.2",
+    "@fastify/basic-auth": "^4.0.0",
+    "bullmq": "^4.15.4",
+    "ioredis": "^5.3.2",
+    "better-sqlite3": "^9.2.2",
+    "https-proxy-agent": "^7.0.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "typescript": "^5.3.2",
+    "tsx": "^4.6.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
