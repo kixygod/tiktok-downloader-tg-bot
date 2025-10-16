@@ -5,16 +5,16 @@ services:
     networks: [app]
     restart: unless-stopped
 
-  xray:
-    image: teddysun/xray
-    container_name: xray
-    volumes:
-      - ./xray/config.json:/etc/xray/config.json:ro
-    ports:
-      - "10809:10809"   # HTTP proxy inbound
-      - "10808:10808"   # SOCKS (запасной)
-    networks: [app]
-    restart: unless-stopped
+  # xray:
+  #   image: teddysun/xray
+  #   container_name: xray
+  #   volumes:
+  #     - ./xray/config.json:/etc/xray/config.json:ro
+  #   ports:
+  #     - "10809:10809"   # HTTP proxy inbound
+  #     - "10808:10808"   # SOCKS (запасной)
+  #   networks: [app]
+  #   restart: unless-stopped
 
   bot:
     build: ./bot
@@ -28,7 +28,7 @@ services:
       FORCE_TELEGRAM_PROXY: "false"
       DASHBOARD_BASIC_AUTH: ${DASHBOARD_BASIC_AUTH:-admin:admin}
       SIZE_LIMIT_MB: "50"
-    depends_on: [redis, xray]
+    depends_on: [redis]
     networks: [app]
     restart: unless-stopped
     ports:
@@ -44,14 +44,14 @@ services:
       TELEGRAM_BOT_TOKEN: ${BOT_TOKEN}
       SIZE_LIMIT_MB: "50"
       MAX_CONCURRENCY: "2"
-      # Прокси для ytdlp/ffmpeg/любых http-клиентов
-      HTTP_PROXY:  http://xray:10809
-      HTTPS_PROXY: http://xray:10809
+      # Прокси для ytdlp/ffmpeg/любых http-клиентов (временно отключен)
+      # HTTP_PROXY:  http://xray:10809
+      # HTTPS_PROXY: http://xray:10809
       # Прямо передаём в yt-dlp:
-      YTDLP_PROXY: http://xray:10809
+      # YTDLP_PROXY: http://xray:10809
     volumes:
       - tmp_data:/tmp/downloads
-    depends_on: [redis, xray]
+    depends_on: [redis]
     networks: [app]
     restart: unless-stopped
 
