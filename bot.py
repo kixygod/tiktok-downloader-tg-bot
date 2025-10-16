@@ -151,7 +151,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             log.error(f"Failed to send error message: {e}")
 
 
-async def main():
+def main():
     log.info("Starting TikTok Downloader Bot...")
 
     # Проверяем доступность прокси
@@ -188,27 +188,14 @@ async def main():
 
     log.info("Bot is ready to receive messages...")
 
-    # Запускаем мониторинг соединения в фоновом режиме
-    asyncio.create_task(start_connection_monitor())
-
     # Запускаем бота
     try:
-        await app.run_polling(stop_signals=())
+        app.run_polling(stop_signals=())
     except (NetworkError, TimedOut) as e:
         log.error("fatal network error: %s", e)
     except Exception as e:
         log.error("fatal error: %s", e)
 
 
-def run_main():
-    """Запускает основную функцию"""
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        log.info("Bot stopped by user")
-    except Exception as e:
-        log.error("Fatal error: %s", e)
-
-
 if __name__ == "__main__":
-    run_main()
+    main()
