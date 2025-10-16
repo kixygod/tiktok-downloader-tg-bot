@@ -1,14 +1,63 @@
-version: "3.8"
-
 services:
-  tiktok-bot:
-    build: .
-    env_file: .env
-    environment:
-      - VLESS_URL=${VLESS_URL}
-    volumes:
-      - /tmp:/tmp # временные файлы для видео/картинок
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "''", "--appendonly", "no"]
+    networks: [app]
     restart: unless-stopped
-    dns:
-      - 1.1.1.1
-      - 8.8.8.8
+
+  xray:
+    image: teddysun/xray
+    container_name: xray
+    volumes:
+      - ./xray/config.json:/etc/xray/config.json:ro
+    ports:
+      - "10809:10809"   # HTTP proxy inbound
+      - "10808:10808"   # SOCKS (запасной)
+    networks: [app]
+    restart: unless-stopped
+
+  bot:
+    build: ./bot
+    environment:
+      BOT_TOKEN: ${BOT_TOKEN}
+      REDIS_URL: redis://redis:6379
+      QUEUE_NAME: tiktok
+      # Бот работает без прокси (Telegram API может блокировать прокси)
+      # HTTP_PROXY:  http://xray:10809
+      # HTTPS_PROXY: http://xray:10809
+      FORCE_TELEGRAM_PROXY: "false"
+      DASHBOARD_BASIC_AUTH: ${DASHBOARD_BASIC_AUTH:-admin:admin}
+      SIZE_LIMIT_MB: "50"
+    depends_on: [redis, xray]
+    networks: [app]
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - bot_data:/app/data
+
+  worker:
+    build: ./worker
+    environment:
+      REDIS_URL: redis://redis:6379
+      QUEUE_NAME: tiktok
+      TELEGRAM_BOT_TOKEN: ${BOT_TOKEN}
+      SIZE_LIMIT_MB: "50"
+      MAX_CONCURRENCY: "2"
+      # Прокси для ytdlp/ffmpeg/любых http-клиентов
+      HTTP_PROXY:  http://xray:10809
+      HTTPS_PROXY: http://xray:10809
+      # Прямо передаём в yt-dlp:
+      YTDLP_PROXY: http://xray:10809
+    volumes:
+      - tmp_data:/tmp/downloads
+    depends_on: [redis, xray]
+    networks: [app]
+    restart: unless-stopped
+
+networks:
+  app:
+
+volumes:
+  tmp_data:
+  bot_data:

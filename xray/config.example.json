@@ -1,0 +1,47 @@
+{
+  "log": { "loglevel": "warning" },
+  "inbounds": [
+    { "port": 10809, "listen": "0.0.0.0", "protocol": "http", "settings": {} },
+    { "port": 10808, "listen": "0.0.0.0", "protocol": "socks", "settings": { "udp": true } }
+  ],
+  "outbounds": [
+    {
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "YOUR_SERVER_IP",
+            "port": 443,
+            "users": [{ "id": "YOUR_UUID", "encryption": "none", "flow": "xtls-rprx-vision" }]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "dest": "google.com:443",
+          "xver": 0,
+          "serverNames": ["google.com"],
+          "fingerprint": "chrome",
+          "publicKey": "YOUR_PUBLIC_KEY",
+          "shortIds": ["YOUR_SHORT_ID"],
+          "spiderX": "/"
+        },
+        "tlsSettings": { "serverName": "google.com", "allowInsecure": false }
+      },
+      "tag": "vless-out"
+    },
+    { "protocol": "freedom", "tag": "direct" }
+  ],
+  "routing": {
+    "domainStrategy": "IPIfNonMatch",
+    "rules": [
+      { "type": "field", "outboundTag": "vless-out", "domain": ["geosite:geolocation-!cn"] },
+      { "type": "field", "outboundTag": "vless-out", "network": "udp,tcp" }
+    ]
+  },
+  "dns": {
+    "servers": ["8.8.8.8", "1.1.1.1"]
+  }
+}
