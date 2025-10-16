@@ -73,7 +73,7 @@ class ConnectionMonitor:
         try:
             # Проверяем доступность прокси
             response = requests.get(
-                "http://httpbin.org/ip", proxies=self.proxy_config, timeout=5
+                "http://httpbin.org/ip", proxies=self.proxy_config, timeout=10
             )
 
             if response.status_code == 200:
@@ -159,7 +159,10 @@ monitor = ConnectionMonitor()
 
 async def start_connection_monitor():
     """Запускает мониторинг соединения в фоновом режиме"""
-    asyncio.create_task(monitor.start_monitoring())
+    # Запускаем мониторинг в фоновом режиме
+    task = asyncio.create_task(monitor.start_monitoring())
+    log.info("Connection monitor started in background")
+    return task
 
 
 def get_connection_status() -> dict:
