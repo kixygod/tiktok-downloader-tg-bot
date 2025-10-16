@@ -257,5 +257,12 @@ async function startServer() {
 
 // Запуск сервера и бота
 startServer();
-run(bot);
-console.log("🤖 Bot started successfully");
+
+// Запуск бота
+try {
+  run(bot);
+  console.log("🤖 Bot started successfully");
+} catch (error) {
+  console.error("❌ Bot failed to start:", error);
+  process.exit(1);
+}
