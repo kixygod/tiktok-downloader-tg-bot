@@ -10,10 +10,19 @@ UA = {"User-Agent": "Mozilla/5.0"}
 # Настройка прокси для всех HTTP запросов
 PROXY = {"http": "http://127.0.0.1:8080", "https": "http://127.0.0.1:8080"}
 
+# Проверяем доступность прокси
+try:
+    response = requests.get("http://httpbin.org/ip", proxies=PROXY, timeout=5)
+    log.info(f"Proxy is available: {response.json()}")
+except Exception as e:
+    log.warning(f"Proxy not available: {e}. Will use direct connection.")
+    PROXY = None
+
 
 def _make_request(method, url, **kwargs):
     """Вспомогательная функция для HTTP запросов с прокси"""
-    kwargs.setdefault("proxies", PROXY)
+    if PROXY:
+        kwargs.setdefault("proxies", PROXY)
     return requests.request(method, url, **kwargs)
 
 
@@ -135,9 +144,11 @@ def _douyin(url: str):
 
 
 def _ytdlp(url: str):
-    with YoutubeDL(
-        {"quiet": True, "skip_download": True, "proxy": "http://127.0.0.1:8080"}
-    ) as ydl:
+    ydl_opts = {"quiet": True, "skip_download": True}
+    if PROXY:
+        ydl_opts["proxy"] = "http://127.0.0.1:8080"
+
+    with YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
     if info.get("ext") == "mp4":
         src = info["url"]
