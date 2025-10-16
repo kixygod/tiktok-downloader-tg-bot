@@ -257,10 +257,28 @@ async function startServer() {
 // Запуск сервера и бота
 startServer();
 
+// Добавляем обработчики ошибок
+bot.catch((err) => {
+  console.error("❌ Bot error:", err);
+});
+
+// Проверяем подключение к Telegram API
+bot.api
+  .getMe()
+  .then((me) => {
+    console.log(
+      `✅ Bot connected successfully: @${me.username} (${me.first_name})`
+    );
+  })
+  .catch((error) => {
+    console.error("❌ Failed to connect to Telegram API:", error);
+    process.exit(1);
+  });
+
 // Запуск бота
 try {
   bot.start();
-  console.log("🤖 Bot started successfully");
+  console.log("🤖 Bot polling started successfully");
 } catch (error) {
   console.error("❌ Bot failed to start:", error);
   process.exit(1);
