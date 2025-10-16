@@ -5,16 +5,18 @@ services:
     networks: [app]
     restart: unless-stopped
 
-  # xray:
-  #   image: teddysun/xray
-  #   container_name: xray
-  #   volumes:
-  #     - ./xray/config.json:/etc/xray/config.json:ro
-  #   ports:
-  #     - "10809:10809"   # HTTP proxy inbound
-  #     - "10808:10808"   # SOCKS (запасной)
-  #   networks: [app]
-  #   restart: unless-stopped
+  xray:
+    image: teddysun/xray
+    container_name: xray-vless
+    volumes:
+      - ./xray/config.json:/etc/xray/config.json:ro
+    ports:
+      - "127.0.0.1:1080:1080"   # SOCKS5 (локально)
+      - "127.0.0.1:1087:1087"   # HTTP proxy (локально)
+    networks: [app]
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
 
   bot:
     build: ./bot
@@ -22,19 +24,23 @@ services:
       BOT_TOKEN: ${BOT_TOKEN}
       REDIS_URL: redis://redis:6379
       QUEUE_NAME: tiktok
-      # Бот работает без прокси (Telegram API может блокировать прокси)
-      # HTTP_PROXY:  http://xray:10809
-      # HTTPS_PROXY: http://xray:10809
-      FORCE_TELEGRAM_PROXY: "false"
+      # Проксируем ВСЁ через Xray
+      HTTP_PROXY:  http://xray:1087
+      HTTPS_PROXY: http://xray:1087
+      ALL_PROXY:   socks5h://xray:1080
+      NO_PROXY: "127.0.0.1,localhost,redis"
       DASHBOARD_BASIC_AUTH: ${DASHBOARD_BASIC_AUTH:-admin:admin}
       SIZE_LIMIT_MB: "50"
-    depends_on: [redis]
+    depends_on: [redis, xray]
     networks: [app]
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "53500:3000"
     volumes:
       - bot_data:/app/data
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
 
   worker:
     build: ./worker
@@ -44,14 +50,16 @@ services:
       TELEGRAM_BOT_TOKEN: ${BOT_TOKEN}
       SIZE_LIMIT_MB: "50"
       MAX_CONCURRENCY: "2"
-      # Прокси для ytdlp/ffmpeg/любых http-клиентов (временно отключен)
-      # HTTP_PROXY:  http://xray:10809
-      # HTTPS_PROXY: http://xray:10809
+      # Прокси для ytdlp/ffmpeg/любых http-клиентов
+      HTTP_PROXY:  http://xray:1087
+      HTTPS_PROXY: http://xray:1087
+      ALL_PROXY:   socks5h://xray:1080
+      NO_PROXY: "127.0.0.1,localhost,redis"
       # Прямо передаём в yt-dlp:
-      # YTDLP_PROXY: http://xray:10809
+      YTDLP_PROXY: http://xray:1087
     volumes:
       - tmp_data:/tmp/downloads
-    depends_on: [redis]
+    depends_on: [redis, xray]
     networks: [app]
     restart: unless-stopped
 

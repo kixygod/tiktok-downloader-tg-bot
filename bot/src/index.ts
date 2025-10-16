@@ -4,13 +4,19 @@ import fastifyBasicAuth from "@fastify/basic-auth";
 import { Queue } from "bullmq";
 import IORedis from "ioredis";
 import Database from "better-sqlite3";
-import { HttpsProxyAgent } from "https-proxy-agent";
+import { ProxyAgent, setGlobalDispatcher } from "undici";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const token = process.env.BOT_TOKEN!;
 const sizeLimitMB = Number(process.env.SIZE_LIMIT_MB ?? "50");
-const forceProxy = process.env.FORCE_TELEGRAM_PROXY === "true";
+
+console.log("🔧 Environment variables:");
+console.log(`  BOT_TOKEN: ${token ? "SET" : "NOT SET"}`);
+console.log(`  HTTP_PROXY: ${process.env.HTTP_PROXY}`);
+console.log(`  HTTPS_PROXY: ${process.env.HTTPS_PROXY}`);
+console.log(`  ALL_PROXY: ${process.env.ALL_PROXY}`);
+console.log(`  NO_PROXY: ${process.env.NO_PROXY}`);
 
 if (!token) {
   console.error("BOT_TOKEN is not set!");
@@ -19,19 +25,17 @@ if (!token) {
 
 const bot = new Bot(token);
 
-// === Прокси для Telegram API (если нужно форсировать) ===
-if (forceProxy) {
-  const proxy = process.env.HTTPS_PROXY || process.env.HTTP_PROXY;
-  if (!proxy) {
-    throw new Error("FORCE_TELEGRAM_PROXY set but no HTTP(S)_PROXY env");
-  }
-  const agent = new HttpsProxyAgent(proxy);
-  bot.api.config.use((prev: any, method: any, payload: any) => {
-    return {
-      ...prev,
-      baseFetchConfig: { agent }, // грамотно проксируем все вызовы
-    };
-  });
+// Настраиваем прокси глобально для всех HTTP запросов
+const proxyUrl = process.env.HTTPS_PROXY || process.env.HTTP_PROXY;
+if (proxyUrl) {
+  console.log(`🔗 Configuring global proxy: ${proxyUrl}`);
+
+  // Устанавливаем глобальный прокси для всех HTTP запросов
+  setGlobalDispatcher(new ProxyAgent(proxyUrl));
+
+  console.log("✅ Global proxy configured for all HTTP requests");
+} else {
+  console.log("⚠️ No proxy configured - using direct connection");
 }
 
 const redisUrl = process.env.REDIS_URL!;
@@ -272,6 +276,12 @@ bot.api
   })
   .catch((error) => {
     console.error("❌ Failed to connect to Telegram API:", error);
+    console.error("Error details:", {
+      name: error.name,
+      message: error.message,
+      stack: error.stack,
+      cause: error.cause,
+    });
     process.exit(1);
   });
 
