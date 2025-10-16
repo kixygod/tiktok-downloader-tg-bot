@@ -1,5 +1,4 @@
 import { Bot, GrammyError, HttpError } from "grammy";
-import { run } from "@grammyjs/runner";
 import Fastify from "fastify";
 import fastifyBasicAuth from "@fastify/basic-auth";
 import { Queue } from "bullmq";
@@ -260,7 +259,7 @@ startServer();
 
 // Запуск бота
 try {
-  run(bot);
+  bot.start();
   console.log("🤖 Bot started successfully");
 } catch (error) {
   console.error("❌ Bot failed to start:", error);
