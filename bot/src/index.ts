@@ -59,7 +59,22 @@ db.exec(`
   );
 `);
 
-const TIKTOK_RE = /(https?:\/\/(?:www\.|vm\.|vt\.)?tiktok\.com\/[^\s]+)/i;
+const SUPPORTED_URL_PATTERNS = [
+  /(https?:\/\/(?:www\.|vm\.|vt\.)?tiktok\.com\/[^\s]+)/i,
+  /(https?:\/\/(?:www\.)?youtube\.com\/shorts\/[^\s]+)/i,
+  /(https?:\/\/(?:www\.)?youtube\.com\/watch\?[^\s]+)/i,
+  /(https?:\/\/(?:www\.)?youtu\.be\/[^\s]+)/i,
+];
+
+function extractSupportedUrl(text: string): string | null {
+  for (const pattern of SUPPORTED_URL_PATTERNS) {
+    const match = text.match(pattern);
+    if (match?.[0]) {
+      return match[0];
+    }
+  }
+  return null;
+}
 
 // Функция для получения среднего времени обработки
 function getAverageProcessingTime(): number {
@@ -81,10 +96,8 @@ function getAverageProcessingTime(): number {
 
 bot.on("message:text", async (ctx: any) => {
   const text = ctx.message.text || ctx.message.caption || "";
-  const match = text.match(TIKTOK_RE);
-  if (!match) return;
-
-  const url = match[1];
+  const url = extractSupportedUrl(text);
+  if (!url) return;
 
   // Получаем среднее время обработки
   const avgTime = getAverageProcessingTime();
