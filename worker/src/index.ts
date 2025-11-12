@@ -1,7 +1,14 @@
 import { Worker, Job } from "bullmq";
 import IORedis from "ioredis";
 import { spawn } from "node:child_process";
-import { statSync, rmSync, mkdirSync, existsSync } from "node:fs";
+import {
+  statSync,
+  rmSync,
+  mkdirSync,
+  existsSync,
+  readdirSync,
+  renameSync,
+} from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { Bot, InputFile } from "grammy";
@@ -23,6 +30,25 @@ try {
   console.warn(`Не удалось создать временную директорию ${TMP_DIR}:`, error);
 }
 const YTDLP_PROXY = process.env.YTDLP_PROXY; // http://xray:10809
+
+function resolveDownloadedFile(outPath: string): string | null {
+  if (existsSync(outPath)) {
+    return outPath;
+  }
+
+  const parsed = path.parse(outPath);
+  try {
+    const files = readdirSync(parsed.dir);
+    const candidate = files.find((file) => file.startsWith(parsed.name));
+    if (candidate) {
+      return path.join(parsed.dir, candidate);
+    }
+  } catch (error) {
+    console.warn("Не удалось просканировать временную директорию:", error);
+  }
+
+  return null;
+}
 
 async function expandUrl(url: string): Promise<string> {
   // Разворачиваем vm.tiktok.com, vt.tiktok.com и tiktok.com/t/... в полный линк
@@ -96,7 +122,25 @@ async function ytDownload(
 
   try {
     await run("yt-dlp", args);
-    return { type: "video", data: outPath };
+    const detectedPath = resolveDownloadedFile(outPath);
+    if (!detectedPath) {
+      throw new Error(
+        `yt-dlp не создал файл по пути ${outPath}. Проверьте формат и логи.`
+      );
+    }
+    let finalPath = detectedPath;
+    if (detectedPath !== outPath) {
+      try {
+        renameSync(detectedPath, outPath);
+        finalPath = outPath;
+      } catch (error) {
+        console.warn(
+          `Не удалось переименовать ${detectedPath} -> ${outPath}:`,
+          error
+        );
+      }
+    }
+    return { type: "video", data: finalPath };
   } catch (e) {
     console.log("yt-dlp failed, trying alternative methods...");
     // Попробуем альтернативные методы
