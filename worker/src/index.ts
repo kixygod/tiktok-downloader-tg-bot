@@ -1,7 +1,7 @@
 import { Worker, Job } from "bullmq";
 import IORedis from "ioredis";
 import { spawn } from "node:child_process";
-import { statSync, rmSync } from "node:fs";
+import { statSync, rmSync, mkdirSync, existsSync } from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { Bot, InputFile } from "grammy";
@@ -17,6 +17,11 @@ const SIZE_LIMIT_MB = Number(process.env.SIZE_LIMIT_MB || "50");
 const MAX_BYTES = SIZE_LIMIT_MB * 1024 * 1024;
 
 const TMP_DIR = "/tmp/downloads";
+try {
+  mkdirSync(TMP_DIR, { recursive: true });
+} catch (error) {
+  console.warn(`Не удалось создать временную директорию ${TMP_DIR}:`, error);
+}
 const YTDLP_PROXY = process.env.YTDLP_PROXY; // http://xray:10809
 
 async function expandUrl(url: string): Promise<string> {
@@ -376,6 +381,11 @@ const worker = new Worker(
 
       // Обработка видео
       const videoPath = result.data as string;
+      if (!existsSync(videoPath)) {
+        throw new Error(
+          `Видео не найдено по пути ${videoPath}. Проверьте лог загрузки.`
+        );
+      }
       let bytes = statSync(videoPath).size;
       console.log(`Downloaded ${bytes} bytes`);
 
