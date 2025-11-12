@@ -62,8 +62,6 @@ db.exec(`
 const SUPPORTED_URL_PATTERNS = [
   /(https?:\/\/(?:www\.|vm\.|vt\.)?tiktok\.com\/[^\s]+)/i,
   /(https?:\/\/(?:www\.)?youtube\.com\/shorts\/[^\s]+)/i,
-  /(https?:\/\/(?:www\.)?youtube\.com\/watch\?[^\s]+)/i,
-  /(https?:\/\/(?:www\.)?youtu\.be\/[^\s]+)/i,
 ];
 
 function extractSupportedUrl(text: string): string | null {
