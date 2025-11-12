@@ -63,6 +63,7 @@ const SUPPORTED_URL_PATTERNS = [
   /(https?:\/\/(?:www\.|vm\.|vt\.)?tiktok\.com\/[^\s]+)/i,
   /(https?:\/\/(?:www\.)?youtube\.com\/shorts\/[^\s]+)/i,
   /(https?:\/\/(?:www\.)?vk\.com\/clip-[^\s]+)/i,
+  /(https?:\/\/(?:www\.)?instagram\.com\/reel\/[^\s]+)/i,
 ];
 
 function extractSupportedUrl(text: string): string | null {
