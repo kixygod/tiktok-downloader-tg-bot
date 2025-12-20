@@ -1,47 +1,89 @@
 {
-  "log": { "loglevel": "warning" },
+  "log": {
+    "level": "warn"
+  },
   "inbounds": [
-    { "port": 10809, "listen": "0.0.0.0", "protocol": "http", "settings": {} },
-    { "port": 10808, "listen": "0.0.0.0", "protocol": "socks", "settings": { "udp": true } }
+    {
+      "type": "socks",
+      "tag": "socks-in",
+      "listen": "0.0.0.0",
+      "listen_port": 1080,
+      "sniff": true,
+      "sniff_override_destination": false
+    },
+    {
+      "type": "http",
+      "tag": "http-in",
+      "listen": "0.0.0.0",
+      "listen_port": 1087,
+      "sniff": true,
+      "sniff_override_destination": false
+    }
   ],
   "outbounds": [
     {
-      "protocol": "vless",
-      "settings": {
-        "vnext": [
-          {
-            "address": "YOUR_SERVER_IP",
-            "port": 443,
-            "users": [{ "id": "YOUR_UUID", "encryption": "none", "flow": "xtls-rprx-vision" }]
-          }
-        ]
+      "type": "hysteria2",
+      "tag": "hysteria2-out",
+      "server": "YOUR_SERVER_IP",
+      "server_port": 443,
+      "password": "YOUR_PASSWORD",
+      "tls": {
+        "enabled": true,
+        "server_name": "YOUR_SERVER_NAME",
+        "insecure": false
       },
-      "streamSettings": {
-        "network": "tcp",
-        "security": "reality",
-        "realitySettings": {
-          "dest": "google.com:443",
-          "xver": 0,
-          "serverNames": ["google.com"],
-          "fingerprint": "chrome",
-          "publicKey": "YOUR_PUBLIC_KEY",
-          "shortIds": ["YOUR_SHORT_ID"],
-          "spiderX": "/"
-        },
-        "tlsSettings": { "serverName": "google.com", "allowInsecure": false }
-      },
-      "tag": "vless-out"
+      "obfs": {
+        "type": "salamander",
+        "password": "YOUR_OBFS_PASSWORD"
+      }
     },
-    { "protocol": "freedom", "tag": "direct" }
+    {
+      "type": "direct",
+      "tag": "direct"
+    }
   ],
-  "routing": {
-    "domainStrategy": "IPIfNonMatch",
+  "route": {
     "rules": [
-      { "type": "field", "outboundTag": "vless-out", "domain": ["geosite:geolocation-!cn"] },
-      { "type": "field", "outboundTag": "vless-out", "network": "udp,tcp" }
-    ]
+      {
+        "ip": [
+          "geoip:cn",
+          "geoip:private"
+        ],
+        "outbound": "direct"
+      },
+      {
+        "domain": [
+          "geosite:cn"
+        ],
+        "outbound": "direct"
+      },
+      {
+        "network": "tcp,udp",
+        "outbound": "hysteria2-out"
+      }
+    ],
+    "final": "hysteria2-out"
   },
   "dns": {
-    "servers": ["8.8.8.8", "1.1.1.1"]
+    "servers": [
+      {
+        "tag": "google",
+        "address": "tls://8.8.8.8",
+        "detour": "direct"
+      },
+      {
+        "tag": "cloudflare",
+        "address": "tls://1.1.1.1",
+        "detour": "direct"
+      },
+      {
+        "tag": "local",
+        "address": "local",
+        "detour": "direct"
+      }
+    ],
+    "strategy": "prefer_ipv4",
+    "rules": []
   }
 }
+
