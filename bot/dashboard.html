@@ -519,7 +519,6 @@
           const data = await response.json();
           console.log("Stats data:", data);
 
-          // Обновляем значения
           document.getElementById("daily").textContent = data.daily;
           document.getElementById("weekly").textContent = data.weekly;
           document.getElementById("monthly").textContent = data.monthly;
@@ -540,15 +539,12 @@
             proxyStatusEl.title = "";
           }
 
-          // Обновляем время
           document.getElementById("updateTime").textContent =
             new Date().toLocaleString();
 
-          // Обновляем статус
           document.getElementById("statusIndicator").className =
             "status-indicator";
 
-          // Убираем ошибки
           document.querySelectorAll(".error").forEach((el) => el.remove());
         } catch (error) {
           console.error("Error fetching stats:", error);
@@ -571,7 +567,6 @@
           const data = await response.json();
           console.log("Charts data:", data);
 
-          // Обновляем графики
           updateHourlyChart(data.hourly);
           updateDailyChart(data.daily);
           updatePerformanceChart(data.daily);
@@ -817,11 +812,10 @@
         fetchCharts();
       }
 
-      // Загружаем данные при старте
       window.onload = function () {
         console.log("Dashboard loaded, starting refresh...");
         refreshStats();
-        // Автоматически обновляем каждые 3 секунды
+
         autoRefreshInterval = setInterval(refreshStats, 3000);
         console.log("Auto-refresh started every 3 seconds");
       };

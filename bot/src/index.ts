@@ -25,12 +25,10 @@ if (!token) {
 
 const bot = new Bot(token);
 
-// Настраиваем прокси глобально для всех HTTP запросов
 const proxyUrl = process.env.HTTPS_PROXY || process.env.HTTP_PROXY;
 if (proxyUrl) {
   console.log(`🔗 Configuring global proxy: ${proxyUrl}`);
 
-  // Устанавливаем глобальный прокси для всех HTTP запросов
   setGlobalDispatcher(new ProxyAgent(proxyUrl));
 
   console.log("✅ Global proxy configured for all HTTP requests");
@@ -45,7 +43,6 @@ const connection = new IORedis(redisUrl, {
 });
 const queue = new Queue(queueName, { connection });
 
-// === БД для статов (SQLite) ===
 const db = new Database("/app/data/stats.db");
 db.exec(`
   CREATE TABLE IF NOT EXISTS jobs (
@@ -63,7 +60,6 @@ const SUPPORTED_URL_PATTERNS = [
   /(https?:\/\/(?:www\.|vm\.|vt\.)?tiktok\.com\/[^\s]+)/i,
   /(https?:\/\/(?:www\.)?youtube\.com\/shorts\/[^\s]+)/i,
   /(https?:\/\/(?:www\.)?vk\.com\/clip-[^\s]+)/i,
-  /(https?:\/\/(?:www\.)?instagram\.com\/reel\/[^\s]+)/i,
 ];
 
 function extractSupportedUrl(text: string): string | null {
@@ -76,7 +72,6 @@ function extractSupportedUrl(text: string): string | null {
   return null;
 }
 
-// Функция для получения среднего времени обработки
 function getAverageProcessingTime(): number {
   try {
     const stmt = db.prepare(`
@@ -86,7 +81,7 @@ function getAverageProcessingTime(): number {
       AND ts > ?
       AND duration_ms > 0
     `);
-    const result = stmt.get(Date.now() - 7 * 24 * 3600 * 1000) as any; // За последние 7 дней
+    const result = stmt.get(Date.now() - 7 * 24 * 3600 * 1000) as any;
     return Math.round(result?.avg_duration || 0);
   } catch (error) {
     console.error("Error getting average processing time:", error);
@@ -96,10 +91,21 @@ function getAverageProcessingTime(): number {
 
 bot.on("message:text", async (ctx: any) => {
   const text = ctx.message.text || ctx.message.caption || "";
+
+  if (text.includes("instagram.com")) {
+    await ctx.reply(
+      "❌ К сожалению, бот не умеет работать с Instagram.\n\nПоддерживаются:\n• TikTok\n• YouTube Shorts\n• VK Clips",
+      {
+        reply_to_message_id: ctx.message.message_id,
+        allow_sending_without_reply: true,
+      }
+    );
+    return;
+  }
+
   const url = extractSupportedUrl(text);
   if (!url) return;
 
-  // Получаем среднее время обработки
   const avgTime = getAverageProcessingTime();
   const avgTimeSeconds = Math.round(avgTime / 1000);
 
@@ -127,7 +133,7 @@ bot.on("message:text", async (ctx: any) => {
       removeOnFail: 500,
       attempts: 3,
       backoff: { type: "exponential", delay: 5000 },
-      jobId: `${ctx.chat.id}:${ctx.message.message_id}`, // грубая дедупликация
+      jobId: `${ctx.chat.id}:${ctx.message.message_id}`,
     }
   );
 });
@@ -143,14 +149,11 @@ bot.catch((err: any) => {
   }
 });
 
-// === Дашборд ===
 const fastify = Fastify({ logger: true });
 
 async function startServer() {
-  // Эндпоинты без авторизации
   fastify.get("/health", async () => ({ ok: true }));
 
-  // Эндпоинт для записи статистики от воркера (без авторизации)
   fastify.post("/stats", async (request: any, reply: any) => {
     const { ts, url, status, bytes, duration_ms, chat_id } =
       request.body as any;
@@ -165,7 +168,6 @@ async function startServer() {
     return { ok: true };
   });
 
-  // Эндпоинт для получения статистики (без авторизации)
   fastify.get("/api/stats", async (request: any, reply: any) => {
     const now = Date.now();
     const day = now - 24 * 3600 * 1000;
@@ -205,13 +207,11 @@ async function startServer() {
     };
   });
 
-  // Эндпоинт для получения данных графиков (без авторизации)
   fastify.get("/api/charts", async (request: any, reply: any) => {
     const now = Date.now();
     const last24h = now - 24 * 3600 * 1000;
     const last7d = now - 7 * 24 * 3600 * 1000;
 
-    // График активности за последние 24 часа (по часам)
     const hourlyQuery = db.prepare(`
       SELECT
         strftime('%H', ts/1000, 'unixepoch') as hour,
@@ -223,7 +223,6 @@ async function startServer() {
     `);
     const hourlyData = hourlyQuery.all(last24h);
 
-    // График активности за последние 7 дней (по дням)
     const dailyQuery = db.prepare(`
       SELECT
         strftime('%Y-%m-%d', ts/1000, 'unixepoch') as date,
@@ -242,7 +241,6 @@ async function startServer() {
     };
   });
 
-  // Защищенные эндпоинты с авторизацией
   await fastify.register(async function (fastify) {
     await fastify.register(fastifyBasicAuth, {
       validate: async (username: any, password: any) => {
@@ -272,9 +270,8 @@ async function startServer() {
         reply.status(500).send("Error loading dashboard");
       }
     });
-  }); // Закрываем регистрацию защищенных эндпоинтов
+  });
 
-  // Запуск сервера
   fastify.listen({ port: 3000, host: "0.0.0.0" }, (err: any, address: any) => {
     if (err) {
       console.error("Error starting server:", err);
@@ -284,15 +281,12 @@ async function startServer() {
   });
 }
 
-// Запуск сервера и бота
 startServer();
 
-// Добавляем обработчики ошибок
 bot.catch((err) => {
   console.error("❌ Bot error:", err);
 });
 
-// Проверяем подключение к Telegram API
 bot.api
   .getMe()
   .then((me) => {
@@ -311,7 +305,6 @@ bot.api
     process.exit(1);
   });
 
-// Запуск бота
 try {
   bot.start();
   console.log("🤖 Bot polling started successfully");

@@ -29,7 +29,7 @@ try {
 } catch (error) {
   console.warn(`Не удалось создать временную директорию ${TMP_DIR}:`, error);
 }
-const YTDLP_PROXY = process.env.YTDLP_PROXY; // http://xray:10809
+const YTDLP_PROXY = process.env.YTDLP_PROXY;
 
 function resolveDownloadedFile(outPath: string): string | null {
   if (existsSync(outPath)) {
@@ -51,7 +51,6 @@ function resolveDownloadedFile(outPath: string): string | null {
 }
 
 async function expandUrl(url: string): Promise<string> {
-  // Разворачиваем vm.tiktok.com, vt.tiktok.com и tiktok.com/t/... в полный линк
   if (
     url.includes("vm.tiktok.com") ||
     url.includes("vt.tiktok.com") ||
@@ -143,7 +142,7 @@ async function ytDownload(
     return { type: "video", data: finalPath };
   } catch (e) {
     console.log("yt-dlp failed, trying alternative methods...");
-    // Попробуем альтернативные методы
+
     return await tryAlternativeDownload(url, outPath);
   }
 }
@@ -179,7 +178,7 @@ async function sendImagesInBatches(
   messageId: number,
   ackMessageId: number
 ) {
-  const batchSize = 10; // Telegram максимум 10 фото в сообщении
+  const batchSize = 10;
 
   for (let i = 0; i < images.length; i += batchSize) {
     const batch = images.slice(i, i + batchSize);
@@ -188,12 +187,10 @@ async function sendImagesInBatches(
       await bot.api.sendChatAction(chatId, "upload_photo");
 
       if (batch.length === 1) {
-        // Одна картинка
         await bot.api.sendPhoto(chatId, new InputFile(batch[0]), {
           reply_to_message_id: messageId,
         });
       } else {
-        // Несколько картинок
         const media = batch.map((img) => ({
           type: "photo" as const,
           media: new InputFile(img),
@@ -204,7 +201,6 @@ async function sendImagesInBatches(
         });
       }
 
-      // Небольшая пауза между батчами
       if (i + batchSize < images.length) {
         await sleep(1000);
       }
@@ -215,7 +211,6 @@ async function sendImagesInBatches(
     }
   }
 
-  // Удаляем сообщение "Обрабатываю"
   await bot.api.deleteMessage(chatId, ackMessageId).catch(() => {});
 }
 
@@ -223,7 +218,6 @@ async function tryAlternativeDownload(
   url: string,
   outPath: string
 ): Promise<{ type: "video" | "images"; data: string | string[] }> {
-  // Используем curl для загрузки через альтернативные сервисы
   const services = [
     `https://tikwm.com/api/?url=${encodeURIComponent(url)}`,
     `https://api.tikmate.app/api/lookup?id=${
@@ -246,13 +240,11 @@ async function tryAlternativeDownload(
 
       const data = (await response.json()) as any;
 
-      // Проверяем на фото-пост
       if (data.data?.images && Array.isArray(data.data.images)) {
         console.log(`Found photo post with ${data.data.images.length} images`);
         return { type: "images", data: data.data.images };
       }
 
-      // Проверяем на видео
       let videoUrl = null;
       if (data.data?.hdplay) {
         videoUrl = data.data.hdplay;
@@ -318,13 +310,13 @@ async function recompressToTarget(
   targetBytes: number
 ): Promise<void> {
   const durMs = (await ffprobeDurationMs(inFile)) || 1;
-  // Возьмём ~6% запас на контейнер/оверрид
+
   const usable = Math.floor(targetBytes * 0.94);
-  // Простейший расчёт битрейта: (usable bytes * 8) / seconds
+
   const seconds = Math.max(1, Math.round(durMs / 1000));
-  // Аудио 96k, остальное видео
+
   const audioK = 96_000;
-  const totalBitrate = Math.max(180_000, Math.floor((usable * 8) / seconds)); // не ниже 180k
+  const totalBitrate = Math.max(180_000, Math.floor((usable * 8) / seconds));
   const videoBitrate = Math.max(120_000, totalBitrate - audioK);
 
   console.log(
@@ -358,7 +350,6 @@ async function recompressToTarget(
 
 async function recordStat(payload: any): Promise<void> {
   try {
-    // Отправляем статистику на бот через HTTP
     const response = await fetch("http://bot:3000/stats", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -389,7 +380,6 @@ const worker = new Worker(
       const result = await ytDownload(expandedUrl, raw);
 
       if (result.type === "images") {
-        // Обработка фото-поста
         console.log(`Processing photo post with ${result.data.length} images`);
         const imageUrls = result.data as string[];
         const downloadedImages = await downloadImages(imageUrls);
@@ -406,12 +396,11 @@ const worker = new Worker(
             ts: started,
             url,
             status: "success",
-            bytes: 0, // Для изображений не считаем байты
+            bytes: 0,
             duration_ms: Date.now() - started,
             chat_id: chatId,
           });
 
-          // Очищаем загруженные изображения
           downloadedImages.forEach((img) => {
             try {
               rmSync(img, { force: true });
@@ -423,7 +412,6 @@ const worker = new Worker(
         }
       }
 
-      // Обработка видео
       const videoPath = result.data as string;
       if (!existsSync(videoPath)) {
         throw new Error(
@@ -437,7 +425,7 @@ const worker = new Worker(
         console.log(
           `File too large (${bytes} > ${MAX_BYTES}), attempting compression...`
         );
-        // Одна попытка пережатия
+
         await recompressToTarget(videoPath, out, MAX_BYTES);
         bytes = statSync(out).size;
         console.log(`After compression: ${bytes} bytes`);
@@ -459,7 +447,6 @@ const worker = new Worker(
           return;
         }
 
-        // заменяем файл
         try {
           rmSync(videoPath, { force: true });
         } catch {}
@@ -481,7 +468,6 @@ const worker = new Worker(
         return;
       }
 
-      // Уже в лимите
       await bot.api.sendChatAction(chatId, "upload_video");
       await bot.api.sendVideo(chatId, new InputFile(videoPath), {
         reply_to_message_id: messageId,
