@@ -1,22 +1,23 @@
 # TikTok Telegram Bot
 
-Быстрый и эффективный Telegram бот для скачивания TikTok видео с поддержкой VLESS VPN, веб-дашбордом статистики и умным сжатием видео.
+Быстрый и эффективный Telegram бот для скачивания видео с поддержкой Hysteria2 VPN, веб-дашбордом статистики и умным сжатием видео.
 
 ## 🚀 Особенности
 
 - **Асинхронная обработка** через Redis очередь (BullMQ)
-- **VLESS VPN поддержка** - весь трафик только через VPN
+- **Hysteria2 VPN поддержка** - весь трафик только через VPN (sing-box)
 - **Умное сжатие** - автоматическое сжатие видео под лимит 50MB
 - **Веб-дашборд** - статистика за день/неделю/месяц/всё время с графиками
 - **Высокая производительность** - TypeScript + Node.js 20
 - **Безопасность** - все файлы временные, автоматическая очистка
 - **Масштабируемость** - легко добавить больше воркеров
 - **Умные уведомления** - показывает среднее время ожидания
+- **Мультиплатформенность** - поддержка TikTok, YouTube Shorts, VK Clips
 
 ## 📋 Требования
 
 - Docker и Docker Compose
-- VLESS сервер с доступом в интернет
+- Hysteria2 сервер с доступом в интернет
 - Telegram Bot Token (получить у @BotFather)
 
 ## 🛠 Быстрая установка
@@ -40,7 +41,7 @@ BOT_TOKEN=1234567890:ABCdefGHIjklMNOpqrsTUVwxyz
 DASHBOARD_BASIC_AUTH=admin:your_secure_password
 ```
 
-### 3. Настройка VLESS
+### 3. Настройка Hysteria2
 
 **⚠️ ВАЖНО**: Файл `xray/config.json` содержит ваши приватные ключи и НЕ должен попадать в Git!
 
@@ -49,52 +50,85 @@ DASHBOARD_BASIC_AUTH=admin:your_secure_password
    cp xray/config.example.json xray/config.json
    ```
 
-2. **Отредактируйте `xray/config.json`** с вашими данными VLESS:
+2. **Отредактируйте `xray/config.json`** с вашими данными Hysteria2:
 
 ```json
 {
+  "log": {
+    "level": "warn"
+  },
+  "inbounds": [
+    {
+      "type": "socks",
+      "tag": "socks-in",
+      "listen": "0.0.0.0",
+      "listen_port": 1080,
+      "sniff": true,
+      "sniff_override_destination": false
+    },
+    {
+      "type": "http",
+      "tag": "http-in",
+      "listen": "0.0.0.0",
+      "listen_port": 1087,
+      "sniff": true,
+      "sniff_override_destination": false
+    }
+  ],
   "outbounds": [
     {
-      "protocol": "vless",
-      "settings": {
-        "vnext": [
-          {
-            "address": "YOUR_SERVER_IP",
-            "port": 443,
-            "users": [{ "id": "YOUR_UUID", "encryption": "none", "flow": "xtls-rprx-vision" }]
-          }
-        ]
+      "type": "hysteria2",
+      "tag": "hysteria2-out",
+      "server": "YOUR_SERVER_IP",
+      "server_port": 443,
+      "password": "YOUR_PASSWORD",
+      "tls": {
+        "enabled": true,
+        "server_name": "YOUR_SNI",
+        "insecure": false
       },
-      "streamSettings": {
-        "network": "tcp",
-        "security": "reality",
-        "realitySettings": {
-          "dest": "google.com:443",
-          "xver": 0,
-          "serverNames": ["google.com"],
-          "fingerprint": "chrome",
-          "publicKey": "YOUR_PUBLIC_KEY",
-          "shortIds": ["YOUR_SHORT_ID"],
-          "spiderX": "/"
-        },
-        "tlsSettings": { "serverName": "google.com", "allowInsecure": false }
-      },
-      "tag": "vless-out"
+      "obfs": {
+        "type": "salamander",
+        "password": "YOUR_OBFS_PASSWORD"
+      }
     },
-    { "protocol": "freedom", "tag": "direct" }
+    {
+      "type": "direct",
+      "tag": "direct"
+    }
   ],
-  "routing": {
-    "domainStrategy": "IPIfNonMatch",
+  "route": {
     "rules": [
-      { "type": "field", "outboundTag": "vless-out", "domain": ["geosite:geolocation-!cn"] },
-      { "type": "field", "outboundTag": "vless-out", "network": "udp,tcp" }
-    ]
+      {
+        "network": "tcp,udp",
+        "outbound": "hysteria2-out"
+      }
+    ],
+    "final": "hysteria2-out"
   },
   "dns": {
-    "servers": ["8.8.8.8", "1.1.1.1"]
+    "servers": [
+      {
+        "tag": "google",
+        "address": "https://8.8.8.8/dns-query",
+        "detour": "direct"
+      },
+      {
+        "tag": "cloudflare",
+        "address": "https://1.1.1.1/dns-query",
+        "detour": "direct"
+      }
+    ],
+    "strategy": "prefer_ipv4"
   }
 }
 ```
+
+**Параметры для замены:**
+- `YOUR_SERVER_IP` - IP адрес вашего Hysteria2 сервера
+- `YOUR_PASSWORD` - пароль из Hysteria2 конфигурации
+- `YOUR_SNI` - Server Name Indication (обычно домен сервера)
+- `YOUR_OBFS_PASSWORD` - пароль для обфускации (salamander)
 
 ### 4. Запуск
 
@@ -115,13 +149,21 @@ docker compose ps
 ## 📱 Использование
 
 1. **Добавьте бота** в чат/группу
-2. **Отправьте ссылку** на TikTok видео
+2. **Отправьте ссылку** на видео
 3. **Бот ответит** реплаем с видео (если ≤50MB) или сообщением об ошибке
 
-**Поддерживаемые форматы ссылок:**
+### Поддерживаемые платформы:
+
+**TikTok:**
 - `https://www.tiktok.com/@user/video/1234567890`
 - `https://vm.tiktok.com/ABC123/`
 - `https://vt.tiktok.com/XYZ789/`
+
+**YouTube Shorts:**
+- `https://www.youtube.com/shorts/VIDEO_ID`
+
+**VK Clips:**
+- `https://vk.com/clip-123456789_987654321`
 
 **Примеры ответов бота:**
 ```
@@ -131,7 +173,7 @@ docker compose ps
 
 ## 📊 Веб-дашборд
 
-Доступен по адресу: http://localhost:3000/dashboard
+Доступен по адресу: http://localhost:53500/dashboard
 
 ### Возможности:
 - **Статистика**: за 24ч, 7д, 30д, всё время
@@ -153,7 +195,7 @@ docker compose ps
 
 - **Конфиденциальные данные**: `xray/config.json` и `.env` файлы исключены из Git
 - **Временные файлы**: все скачанные файлы автоматически удаляются
-- **VPN трафик**: весь исходящий трафик только через VLESS VPN
+- **VPN трафик**: весь исходящий трафик только через Hysteria2 VPN (sing-box)
 - **Аутентификация**: базовая аутентификация для дашборда
 - **Изоляция**: контейнеры изолированы через Docker сети
 - **Лимиты**: строгий лимит 50MB на файлы
@@ -194,7 +236,7 @@ docker compose ps
 docker stats
 
 # Проверка здоровья
-curl http://localhost:3000/health
+curl http://localhost:53500/health
 ```
 
 ## 🆘 Решение проблем
@@ -209,9 +251,10 @@ curl http://localhost:3000/health
    ```
 
 ### Ошибки скачивания
-1. Проверьте настройки VLESS в `xray/config.json`
+1. Проверьте настройки Hysteria2 в `xray/config.json`
 2. Убедитесь что VPN сервер работает
 3. Проверьте логи воркера: `docker compose logs worker`
+4. Проверьте логи прокси: `docker compose logs xray`
 
 ### Дашборд недоступен
 1. Проверьте что порт 3000 открыт
@@ -229,13 +272,13 @@ curl http://localhost:3000/health
 ```bash
 git init
 git add .
-git commit -m "Initial commit: TikTok Bot with VLESS VPN"
+git commit -m "Initial commit: TikTok Bot with Hysteria2 VPN"
 git remote add origin <your-github-repo-url>
 git push -u origin main
 ```
 
 ### Что защищено .gitignore
-- `xray/config.json` - ваши VLESS ключи
+- `xray/config.json` - ваши Hysteria2 ключи и пароли
 - `.env` - токены бота и пароли
 - `bot_data/` - база данных SQLite
 - `tmp_data/` - временные файлы
@@ -264,16 +307,16 @@ git push -u origin main
                                             │
                                             ▼
                                    ┌─────────────┐
-                                   │    Xray      │
-                                   │ (VLESS VPN)  │
+                                   │  sing-box   │
+                                   │ (Hysteria2) │
                                    └─────────────┘
 ```
 
 ### Компоненты:
 - **Bot** (`bot/`) - Telegram бот и веб-дашборд
-- **Worker** (`worker/`) - обработка TikTok ссылок
-- **Redis** - очередь задач
-- **Xray** - VLESS клиент для VPN
+- **Worker** (`worker/`) - обработка видео ссылок (yt-dlp)
+- **Redis** - очередь задач (BullMQ)
+- **sing-box** - Hysteria2 клиент для VPN (контейнер xray)
 - **SQLite** - статистика (встроена в бот)
 
 ## ⚙️ Настройки
@@ -286,11 +329,16 @@ SIZE_LIMIT_MB=50
 MAX_CONCURRENCY=2
 ```
 
+**Примечание**: Прокси настраивается автоматически через переменные окружения в `docker-compose.yml`:
+- `HTTP_PROXY=http://xray:1087` - HTTP прокси для yt-dlp
+- `HTTPS_PROXY=http://xray:1087` - HTTPS прокси
+- `ALL_PROXY=socks5h://xray:1080` - SOCKS5 прокси (fallback)
+
 ### Docker Compose
 - **Redis**: очередь задач без персистентности
-- **Xray**: VLESS клиент с HTTP/SOCKS прокси
-- **Bot**: основной сервис с дашбордом
-- **Worker**: обработка видео через VPN
+- **xray** (sing-box): Hysteria2 клиент с HTTP (1087) и SOCKS5 (1080) прокси
+- **Bot**: основной сервис с дашбордом (порт 53500)
+- **Worker**: обработка видео через VPN (yt-dlp, ffmpeg)
 
 ## 📄 Лицензия
 
@@ -300,5 +348,6 @@ MIT License - используйте свободно для любых целе
 
 **При возникновении проблем:**
 1. Проверьте логи всех сервисов
-2. Убедитесь в правильности настроек VLESS
+2. Убедитесь в правильности настроек Hysteria2 в `xray/config.json`
 3. Проверьте доступность Telegram API через VPN
+4. Убедитесь что прокси работает: `docker compose logs xray`
