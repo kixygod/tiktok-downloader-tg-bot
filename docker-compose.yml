@@ -6,17 +6,18 @@ services:
     restart: unless-stopped
 
   xray:
-    image: teddysun/xray
-    container_name: xray-vless
+    image: superng6/singbox:latest
+    container_name: xray-hysteria2
     volumes:
-      - ./xray/config.json:/etc/xray/config.json:ro
+      - ./xray/config.json:/etc/sing-box/config.json:ro
     ports:
-      - "127.0.0.1:1080:1080"   # SOCKS5 (локально)
-      - "127.0.0.1:1087:1087"   # HTTP proxy (локально)
+      - "127.0.0.1:1080:1080" # SOCKS5 (локально)
+      - "127.0.0.1:1087:1087" # HTTP proxy (локально)
     networks: [app]
     restart: unless-stopped
     cap_add:
       - NET_ADMIN
+    command: ["run", "-c", "/etc/sing-box/config.json"]
 
   bot:
     build: ./bot
@@ -25,9 +26,9 @@ services:
       REDIS_URL: redis://redis:6379
       QUEUE_NAME: tiktok
       # Проксируем ВСЁ через Xray
-      HTTP_PROXY:  http://xray:1087
+      HTTP_PROXY: http://xray:1087
       HTTPS_PROXY: http://xray:1087
-      ALL_PROXY:   socks5h://xray:1080
+      ALL_PROXY: socks5h://xray:1080
       NO_PROXY: "127.0.0.1,localhost,redis"
       DASHBOARD_BASIC_AUTH: ${DASHBOARD_BASIC_AUTH:-admin:admin}
       SIZE_LIMIT_MB: "50"
@@ -51,9 +52,9 @@ services:
       SIZE_LIMIT_MB: "50"
       MAX_CONCURRENCY: "2"
       # Прокси для ytdlp/ffmpeg/любых http-клиентов
-      HTTP_PROXY:  http://xray:1087
+      HTTP_PROXY: http://xray:1087
       HTTPS_PROXY: http://xray:1087
-      ALL_PROXY:   socks5h://xray:1080
+      ALL_PROXY: socks5h://xray:1080
       NO_PROXY: "127.0.0.1,localhost,redis"
       # Прямо передаём в yt-dlp:
       YTDLP_PROXY: http://xray:1087
@@ -69,3 +70,4 @@ networks:
 volumes:
   tmp_data:
   bot_data:
+
