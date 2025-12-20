@@ -182,6 +182,17 @@ async function startServer() {
     FROM jobs`);
     const row = q.get(day, week, month);
 
+    const proxyEnabled = !!(
+      process.env.HTTP_PROXY ||
+      process.env.HTTPS_PROXY ||
+      process.env.ALL_PROXY
+    );
+    const proxyUrl =
+      process.env.HTTPS_PROXY ||
+      process.env.HTTP_PROXY ||
+      process.env.ALL_PROXY ||
+      "не настроен";
+
     return {
       daily: row.d_total ?? 0,
       weekly: row.w_total ?? 0,
@@ -189,6 +200,8 @@ async function startServer() {
       total: row.all_total ?? 0,
       traffic: Math.round(((row.all_bytes ?? 0) / 1024 / 1024) * 10) / 10,
       avgDuration: Math.round(row.avg_ms ?? 0),
+      proxyEnabled,
+      proxyUrl: proxyEnabled ? proxyUrl : null,
     };
   });
 

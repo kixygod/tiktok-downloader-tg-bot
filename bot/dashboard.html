@@ -527,6 +527,19 @@
           document.getElementById("traffic").textContent = data.traffic;
           document.getElementById("avgDuration").textContent = data.avgDuration;
 
+          const proxyStatusEl = document.getElementById("proxyStatus");
+          if (data.proxyEnabled) {
+            proxyStatusEl.textContent = "✅ Включен";
+            proxyStatusEl.style.color = "var(--accent-secondary)";
+            if (data.proxyUrl) {
+              proxyStatusEl.title = data.proxyUrl;
+            }
+          } else {
+            proxyStatusEl.textContent = "❌ Отключен";
+            proxyStatusEl.style.color = "var(--accent-danger)";
+            proxyStatusEl.title = "";
+          }
+
           // Обновляем время
           document.getElementById("updateTime").textContent =
             new Date().toLocaleString();
