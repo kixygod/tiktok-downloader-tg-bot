@@ -1,272 +1,882 @@
 <!DOCTYPE html>
 <html lang="ru">
-<head>
-  <meta charset="utf-8"/>
-  <title>TikTok Bot — Dashboard</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
-  <style>
-    *{box-sizing:border-box;margin:0;padding:0}
-    :root{
-      --bg:#0b0f19;--bg2:#131825;--bg3:#1a2035;--card:#161d2f;
-      --border:#232d45;--text:#e2e8f0;--muted:#64748b;--accent:#6366f1;
-      --accent2:#818cf8;--green:#22c55e;--red:#ef4444;--amber:#f59e0b;
-      --cyan:#06b6d4;--radius:12px;
-    }
-    body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--text);line-height:1.5;min-height:100vh}
-    a{color:var(--accent2);text-decoration:none}
+  <head>
+    <meta charset="utf-8" />
+    <title>TikTok Bot — Dashboard</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+    <style>
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
 
-    .shell{max-width:1440px;margin:0 auto;padding:24px}
-    header{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:16px;margin-bottom:28px}
-    header h1{font-size:1.5rem;font-weight:700;background:linear-gradient(135deg,var(--accent),var(--cyan));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
-    .header-right{display:flex;align-items:center;gap:12px}
-    .live-dot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 8px var(--green);animation:pulse 2s infinite}
-    @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
-    .refresh-label{font-size:.8rem;color:var(--muted)}
+      :root {
+        --bg: #0b0f19;
+        --bg2: #131825;
+        --bg3: #1a2035;
+        --card: #161d2f;
+        --border: #232d45;
+        --text: #e2e8f0;
+        --muted: #64748b;
+        --accent: #6366f1;
+        --accent2: #818cf8;
+        --green: #22c55e;
+        --red: #ef4444;
+        --amber: #f59e0b;
+        --cyan: #06b6d4;
+        --radius: 12px;
+      }
 
-    /* KPI row */
-    .kpi-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:14px;margin-bottom:24px}
-    .kpi{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:18px 20px;transition:transform .15s}
-    .kpi:hover{transform:translateY(-2px)}
-    .kpi-val{font-size:1.75rem;font-weight:700;letter-spacing:-.03em}
-    .kpi-label{font-size:.75rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-top:4px}
-    .kpi-accent{color:var(--accent2)}.kpi-green{color:var(--green)}.kpi-red{color:var(--red)}.kpi-amber{color:var(--amber)}.kpi-cyan{color:var(--cyan)}
+      body {
+        font-family: "Inter", system-ui, -apple-system, sans-serif;
+        background: var(--bg);
+        color: var(--text);
+        line-height: 1.5;
+        min-height: 100vh;
+      }
 
-    /* charts */
-    .charts-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:24px}
-    .chart-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:20px}
-    .chart-card h3{font-size:.9rem;font-weight:600;margin-bottom:14px;color:var(--text)}
-    .chart-card canvas{width:100%!important;max-height:280px}
-    .chart-full{grid-column:1/-1}
+      a {
+        color: var(--accent2);
+        text-decoration: none;
+      }
 
-    /* small cards row */
-    .smalls{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:24px}
+      .shell {
+        max-width: 1440px;
+        margin: 0 auto;
+        padding: 24px;
+      }
 
-    /* recent table */
-    .table-wrap{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:20px;overflow-x:auto;margin-bottom:24px}
-    .table-head{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:16px}
-    .table-head h3{font-size:.9rem;font-weight:600}
-    .filters{display:flex;gap:8px;flex-wrap:wrap}
-    .filters select,.filters input{background:var(--bg3);border:1px solid var(--border);border-radius:8px;color:var(--text);padding:6px 10px;font-size:.8rem}
-    .filters select:focus,.filters input:focus{outline:none;border-color:var(--accent)}
-    table{width:100%;border-collapse:collapse;font-size:.82rem}
-    th{text-align:left;padding:10px 12px;border-bottom:1px solid var(--border);color:var(--muted);font-weight:500;font-size:.75rem;text-transform:uppercase;letter-spacing:.05em}
-    td{padding:9px 12px;border-bottom:1px solid rgba(35,45,69,.5)}
-    tr:hover td{background:rgba(99,102,241,.04)}
-    .badge{display:inline-block;padding:2px 8px;border-radius:6px;font-size:.72rem;font-weight:600}
-    .badge-ok{background:rgba(34,197,94,.15);color:var(--green)}
-    .badge-fail{background:rgba(239,68,68,.15);color:var(--red)}
-    .badge-comp{background:rgba(245,158,11,.15);color:var(--amber)}
-    .badge-large{background:rgba(6,182,212,.15);color:var(--cyan)}
-    .pager{display:flex;justify-content:center;gap:8px;margin-top:14px}
-    .pager button{background:var(--bg3);border:1px solid var(--border);border-radius:8px;color:var(--text);padding:6px 14px;cursor:pointer;font-size:.8rem}
-    .pager button:disabled{opacity:.35;cursor:default}
-    .pager button:hover:not(:disabled){border-color:var(--accent)}
-    .pager span{line-height:32px;font-size:.8rem;color:var(--muted)}
-    .url-cell{max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+      header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 16px;
+        margin-bottom: 28px;
+      }
 
-    @media(max-width:900px){.charts-grid,.smalls{grid-template-columns:1fr}.chart-full{grid-column:auto}}
-    @media(max-width:600px){.kpi-row{grid-template-columns:repeat(2,1fr)}.shell{padding:14px}header h1{font-size:1.2rem}}
-  </style>
-</head>
-<body>
-<div class="shell">
-  <header>
-    <h1>TikTok Bot Dashboard</h1>
-    <div class="header-right">
-      <div class="live-dot"></div>
-      <span class="refresh-label" id="lastUpdate">загрузка...</span>
-    </div>
-  </header>
+      header h1 {
+        font-size: 1.5rem;
+        font-weight: 700;
+        background: linear-gradient(135deg, var(--accent), var(--cyan));
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+      }
 
-  <!-- KPI -->
-  <div class="kpi-row">
-    <div class="kpi"><div class="kpi-val kpi-accent" id="k-daily">—</div><div class="kpi-label">За 24 ч</div></div>
-    <div class="kpi"><div class="kpi-val kpi-accent" id="k-weekly">—</div><div class="kpi-label">За 7 дней</div></div>
-    <div class="kpi"><div class="kpi-val kpi-accent" id="k-monthly">—</div><div class="kpi-label">За 30 дней</div></div>
-    <div class="kpi"><div class="kpi-val" id="k-total">—</div><div class="kpi-label">Всего</div></div>
-    <div class="kpi"><div class="kpi-val kpi-green" id="k-success">—</div><div class="kpi-label">Успешные</div></div>
-    <div class="kpi"><div class="kpi-val kpi-red" id="k-failed">—</div><div class="kpi-label">Ошибки</div></div>
-    <div class="kpi"><div class="kpi-val kpi-cyan" id="k-traffic">—</div><div class="kpi-label">Трафик</div></div>
-    <div class="kpi"><div class="kpi-val kpi-amber" id="k-avgtime">—</div><div class="kpi-label">Ср. время</div></div>
-  </div>
+      .header-right {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
 
-  <!-- Charts -->
-  <div class="charts-grid">
-    <div class="chart-card chart-full">
-      <h3>Запросы по дням (30д)</h3>
-      <canvas id="dailyChart"></canvas>
-    </div>
-    <div class="chart-card">
-      <h3>Активность за 24ч (по часам)</h3>
-      <canvas id="hourlyChart"></canvas>
-    </div>
-    <div class="chart-card">
-      <h3>Среднее время обработки (по дням)</h3>
-      <canvas id="perfChart"></canvas>
-    </div>
-  </div>
+      .live-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--green);
+        box-shadow: 0 0 8px var(--green);
+        animation: pulse 2s infinite;
+      }
 
-  <div class="smalls">
-    <div class="chart-card">
-      <h3>Платформы</h3>
-      <canvas id="platformChart"></canvas>
-    </div>
-    <div class="chart-card">
-      <h3>Статусы</h3>
-      <canvas id="statusChart"></canvas>
-    </div>
-  </div>
+      @keyframes pulse {
+        0%,
+        100% {
+          opacity: 1;
+        }
 
-  <!-- Recent jobs table -->
-  <div class="table-wrap">
-    <div class="table-head">
-      <h3>Последние запросы</h3>
-      <div class="filters">
-        <select id="f-status"><option value="">Все статусы</option><option value="success">Успех</option><option value="compressed">Сжатие</option><option value="too_large">Превышение</option><option value="failed">Ошибка</option></select>
-        <select id="f-platform"><option value="">Все платформы</option><option value="tiktok">TikTok</option><option value="youtube">YouTube</option><option value="vk">VK</option></select>
-        <input id="f-chat" placeholder="Chat ID" style="width:120px"/>
+        50% {
+          opacity: 0.4;
+        }
+      }
+
+      .refresh-label {
+        font-size: 0.8rem;
+        color: var(--muted);
+      }
+
+      /* KPI row */
+      .kpi-row {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+        gap: 14px;
+        margin-bottom: 24px;
+      }
+
+      .kpi {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 18px 20px;
+        transition: transform 0.15s;
+      }
+
+      .kpi:hover {
+        transform: translateY(-2px);
+      }
+
+      .kpi-val {
+        font-size: 1.75rem;
+        font-weight: 700;
+        letter-spacing: -0.03em;
+      }
+
+      .kpi-label {
+        font-size: 0.75rem;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        margin-top: 4px;
+      }
+
+      .kpi-accent {
+        color: var(--accent2);
+      }
+
+      .kpi-green {
+        color: var(--green);
+      }
+
+      .kpi-red {
+        color: var(--red);
+      }
+
+      .kpi-amber {
+        color: var(--amber);
+      }
+
+      .kpi-cyan {
+        color: var(--cyan);
+      }
+
+      /* charts */
+      .charts-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 14px;
+        margin-bottom: 24px;
+      }
+
+      .chart-card {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 20px;
+      }
+
+      .chart-card h3 {
+        font-size: 0.9rem;
+        font-weight: 600;
+        margin-bottom: 14px;
+        color: var(--text);
+      }
+
+      .chart-card canvas {
+        width: 100% !important;
+        max-height: 280px;
+      }
+
+      .chart-full {
+        grid-column: 1/-1;
+      }
+
+      /* small cards row */
+      .smalls {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 14px;
+        margin-bottom: 24px;
+      }
+
+      /* recent table */
+      .table-wrap {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 20px;
+        overflow-x: auto;
+        margin-bottom: 24px;
+      }
+
+      .table-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-bottom: 16px;
+      }
+
+      .table-head h3 {
+        font-size: 0.9rem;
+        font-weight: 600;
+      }
+
+      .filters {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+
+      .filters select,
+      .filters input {
+        background: var(--bg3);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        color: var(--text);
+        padding: 6px 10px;
+        font-size: 0.8rem;
+      }
+
+      .filters select:focus,
+      .filters input:focus {
+        outline: none;
+        border-color: var(--accent);
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.82rem;
+      }
+
+      th {
+        text-align: left;
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--border);
+        color: var(--muted);
+        font-weight: 500;
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+
+      td {
+        padding: 9px 12px;
+        border-bottom: 1px solid rgba(35, 45, 69, 0.5);
+      }
+
+      tr:hover td {
+        background: rgba(99, 102, 241, 0.04);
+      }
+
+      .badge {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 6px;
+        font-size: 0.72rem;
+        font-weight: 600;
+      }
+
+      .badge-ok {
+        background: rgba(34, 197, 94, 0.15);
+        color: var(--green);
+      }
+
+      .badge-fail {
+        background: rgba(239, 68, 68, 0.15);
+        color: var(--red);
+      }
+
+      .badge-comp {
+        background: rgba(245, 158, 11, 0.15);
+        color: var(--amber);
+      }
+
+      .badge-large {
+        background: rgba(6, 182, 212, 0.15);
+        color: var(--cyan);
+      }
+
+      .pager {
+        display: flex;
+        justify-content: center;
+        gap: 8px;
+        margin-top: 14px;
+      }
+
+      .pager button {
+        background: var(--bg3);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        color: var(--text);
+        padding: 6px 14px;
+        cursor: pointer;
+        font-size: 0.8rem;
+      }
+
+      .pager button:disabled {
+        opacity: 0.35;
+        cursor: default;
+      }
+
+      .pager button:hover:not(:disabled) {
+        border-color: var(--accent);
+      }
+
+      .pager span {
+        line-height: 32px;
+        font-size: 0.8rem;
+        color: var(--muted);
+      }
+
+      .url-cell {
+        max-width: 280px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      @media (max-width: 900px) {
+        .charts-grid,
+        .smalls {
+          grid-template-columns: 1fr;
+        }
+
+        .chart-full {
+          grid-column: auto;
+        }
+      }
+
+      @media (max-width: 600px) {
+        .kpi-row {
+          grid-template-columns: repeat(2, 1fr);
+        }
+
+        .shell {
+          padding: 14px;
+        }
+
+        header h1 {
+          font-size: 1.2rem;
+        }
+      }
+    </style>
+  </head>
+
+  <body>
+    <div class="shell">
+      <header>
+        <h1>TikTok Bot Dashboard</h1>
+        <div class="header-right">
+          <div class="live-dot"></div>
+          <span class="refresh-label" id="lastUpdate">загрузка...</span>
+        </div>
+      </header>
+
+      <!-- KPI -->
+      <div class="kpi-row">
+        <div class="kpi">
+          <div class="kpi-val kpi-accent" id="k-daily">—</div>
+          <div class="kpi-label">За 24 ч</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-val kpi-accent" id="k-weekly">—</div>
+          <div class="kpi-label">За 7 дней</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-val kpi-accent" id="k-monthly">—</div>
+          <div class="kpi-label">За 30 дней</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-val" id="k-total">—</div>
+          <div class="kpi-label">Всего</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-val kpi-green" id="k-success">—</div>
+          <div class="kpi-label">Успешные</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-val kpi-red" id="k-failed">—</div>
+          <div class="kpi-label">Ошибки</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-val kpi-cyan" id="k-traffic">—</div>
+          <div class="kpi-label">Трафик</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-val kpi-amber" id="k-avgtime">—</div>
+          <div class="kpi-label">Ср. время</div>
+        </div>
+      </div>
+
+      <!-- Charts -->
+      <div class="charts-grid">
+        <div class="chart-card chart-full">
+          <h3>Запросы по дням (30д)</h3>
+          <canvas id="dailyChart"></canvas>
+        </div>
+        <div class="chart-card">
+          <h3>Активность за 24ч (по часам)</h3>
+          <canvas id="hourlyChart"></canvas>
+        </div>
+        <div class="chart-card">
+          <h3>Среднее время обработки (по дням)</h3>
+          <canvas id="perfChart"></canvas>
+        </div>
+      </div>
+
+      <div class="smalls">
+        <div class="chart-card">
+          <h3>Платформы</h3>
+          <canvas id="platformChart"></canvas>
+        </div>
+        <div class="chart-card">
+          <h3>Статусы</h3>
+          <canvas id="statusChart"></canvas>
+        </div>
+      </div>
+
+      <!-- Recent jobs table -->
+      <div class="table-wrap">
+        <div class="table-head">
+          <h3>Последние запросы</h3>
+          <div class="filters">
+            <select id="f-status">
+              <option value="">Все статусы</option>
+              <option value="success">Успех</option>
+              <option value="compressed">Сжатие</option>
+              <option value="too_large">Превышение</option>
+              <option value="failed">Ошибка</option>
+            </select>
+            <select id="f-platform">
+              <option value="">Все платформы</option>
+              <option value="tiktok">TikTok</option>
+              <option value="youtube">YouTube</option>
+              <option value="vk">VK</option>
+            </select>
+            <input id="f-chat" placeholder="Chat ID" style="width: 120px" />
+          </div>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Время</th>
+              <th>Юзер</th>
+              <th>Платформа</th>
+              <th>Ссылка</th>
+              <th>Статус</th>
+              <th>Размер</th>
+              <th>Время обр.</th>
+            </tr>
+          </thead>
+          <tbody id="tbody"></tbody>
+        </table>
+        <div class="pager">
+          <button id="pg-prev" disabled>← Назад</button>
+          <span id="pg-info">—</span>
+          <button id="pg-next" disabled>Вперёд →</button>
+        </div>
       </div>
     </div>
-    <table>
-      <thead><tr><th>Время</th><th>Юзер</th><th>Платформа</th><th>Ссылка</th><th>Статус</th><th>Размер</th><th>Время обр.</th></tr></thead>
-      <tbody id="tbody"></tbody>
-    </table>
-    <div class="pager">
-      <button id="pg-prev" disabled>← Назад</button>
-      <span id="pg-info">—</span>
-      <button id="pg-next" disabled>Вперёд →</button>
-    </div>
-  </div>
-</div>
 
-<script>
-const PAGE_SIZE=30;
-let page=0,totalRows=0;
-let chartsInited=false;
-let dailyC,hourlyC,perfC,platformC,statusC;
+    <script>
+      const PAGE_SIZE = 30;
+      let page = 0,
+        totalRows = 0;
+      let chartsInited = false;
+      let dailyC, hourlyC, perfC, platformC, statusC;
 
-const chartDefaults={
-  responsive:true,
-  maintainAspectRatio:false,
-  plugins:{legend:{display:false},tooltip:{backgroundColor:'#1a2035',titleColor:'#e2e8f0',bodyColor:'#cbd5e1',borderColor:'#232d45',borderWidth:1,padding:10,cornerRadius:8}},
-  scales:{x:{grid:{color:'rgba(35,45,69,.6)'},ticks:{color:'#64748b',font:{size:11}}},y:{grid:{color:'rgba(35,45,69,.6)'},ticks:{color:'#64748b',font:{size:11}},beginAtZero:true}}
-};
+      const chartDefaults = {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            backgroundColor: "#1a2035",
+            titleColor: "#e2e8f0",
+            bodyColor: "#cbd5e1",
+            borderColor: "#232d45",
+            borderWidth: 1,
+            padding: 10,
+            cornerRadius: 8,
+          },
+        },
+        scales: {
+          x: {
+            grid: { color: "rgba(35,45,69,.6)" },
+            ticks: { color: "#64748b", font: { size: 11 } },
+          },
+          y: {
+            grid: { color: "rgba(35,45,69,.6)" },
+            ticks: { color: "#64748b", font: { size: 11 } },
+            beginAtZero: true,
+          },
+        },
+      };
 
-function fmtBytes(b){if(!b)return '0';b=Number(b);if(b<1024)return b+'B';if(b<1048576)return (b/1024).toFixed(1)+'KB';return (b/1048576).toFixed(1)+'MB';}
-function fmtMs(ms){ms=Number(ms);if(ms<1000)return ms+'ms';if(ms<60000)return (ms/1000).toFixed(1)+'s';return Math.floor(ms/60000)+'m'+(Math.round(ms%60000/1000))+'s';}
-function fmtTime(ts){const d=new Date(Number(ts));return d.toLocaleString('ru',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}
-function statusBadge(s){const m={success:['Успех','badge-ok'],compressed:['Сжат','badge-comp'],too_large:['Большой','badge-large'],failed:['Ошибка','badge-fail']};const[l,c]=m[s]||[s,''];return `<span class="badge ${c}">${l}</span>`;}
-function platformLabel(p){return {tiktok:'TikTok',youtube:'YouTube',vk:'VK'}[p]||p||'—';}
+      function fmtBytes(b) {
+        if (!b) return "0";
+        b = Number(b);
+        if (b < 1024) return b + "B";
+        if (b < 1048576) return (b / 1024).toFixed(1) + "KB";
+        return (b / 1048576).toFixed(1) + "MB";
+      }
+      function fmtMs(ms) {
+        ms = Number(ms);
+        if (ms < 1000) return ms + "ms";
+        if (ms < 60000) return (ms / 1000).toFixed(1) + "s";
+        return (
+          Math.floor(ms / 60000) + "m" + Math.round((ms % 60000) / 1000) + "s"
+        );
+      }
+      function fmtTime(ts) {
+        const d = new Date(Number(ts));
+        return d.toLocaleString("ru", {
+          day: "2-digit",
+          month: "2-digit",
+          hour: "2-digit",
+          minute: "2-digit",
+        });
+      }
+      function statusBadge(s) {
+        const m = {
+          success: ["Успех", "badge-ok"],
+          compressed: ["Сжат", "badge-comp"],
+          too_large: ["Большой", "badge-large"],
+          failed: ["Ошибка", "badge-fail"],
+        };
+        const [l, c] = m[s] || [s, ""];
+        return `<span class="badge ${c}">${l}</span>`;
+      }
+      function platformLabel(p) {
+        return (
+          { tiktok: "TikTok", youtube: "YouTube", vk: "VK" }[p] || p || "—"
+        );
+      }
 
-async function loadStats(){
-  try{
-    const r=await fetch('/api/stats');const d=await r.json();
-    document.getElementById('k-daily').textContent=d.daily;
-    document.getElementById('k-weekly').textContent=d.weekly;
-    document.getElementById('k-monthly').textContent=d.monthly;
-    document.getElementById('k-total').textContent=d.total;
-    document.getElementById('k-success').textContent=d.totalSuccess;
-    document.getElementById('k-failed').textContent=d.totalFailed;
-    document.getElementById('k-traffic').textContent=d.traffic>=1024?(d.traffic/1024).toFixed(1)+' GB':d.traffic+' MB';
-    document.getElementById('k-avgtime').textContent=fmtMs(d.avgDuration);
-    document.getElementById('lastUpdate').textContent='обновлено '+new Date().toLocaleTimeString('ru');
-  }catch(e){console.error(e)}
-}
+      async function loadStats() {
+        try {
+          const r = await fetch("/api/stats");
+          const d = await r.json();
+          document.getElementById("k-daily").textContent = d.daily;
+          document.getElementById("k-weekly").textContent = d.weekly;
+          document.getElementById("k-monthly").textContent = d.monthly;
+          document.getElementById("k-total").textContent = d.total;
+          document.getElementById("k-success").textContent = d.totalSuccess;
+          document.getElementById("k-failed").textContent = d.totalFailed;
+          document.getElementById("k-traffic").textContent =
+            d.traffic >= 1024
+              ? (d.traffic / 1024).toFixed(1) + " GB"
+              : d.traffic + " MB";
+          document.getElementById("k-avgtime").textContent = fmtMs(
+            d.avgDuration
+          );
+          document.getElementById("lastUpdate").textContent =
+            "обновлено " + new Date().toLocaleTimeString("ru");
+        } catch (e) {
+          console.error(e);
+        }
+      }
 
-async function loadCharts(){
-  try{
-    const r=await fetch('/api/charts');const d=await r.json();
-    renderDailyChart(d.daily);
-    renderHourlyChart(d.hourly);
-    renderPerfChart(d.daily);
-    renderPlatformChart(d.platforms);
-    renderStatusChart(d.statuses);
-  }catch(e){console.error(e)}
-}
+      async function loadCharts() {
+        try {
+          const r = await fetch("/api/charts");
+          const d = await r.json();
+          renderDailyChart(d.daily);
+          renderHourlyChart(d.hourly);
+          renderPerfChart(d.daily);
+          renderPlatformChart(d.platforms);
+          renderStatusChart(d.statuses);
+        } catch (e) {
+          console.error(e);
+        }
+      }
 
-function renderDailyChart(data){
-  const labels=data.map(d=>{const p=d.date.split('-');return p[2]+'.'+p[1]});
-  const cfg={type:'bar',data:{labels,datasets:[
-    {label:'Успех',data:data.map(d=>d.success||0),backgroundColor:'rgba(34,197,94,.6)',borderRadius:4},
-    {label:'Ошибки',data:data.map(d=>d.failed||0),backgroundColor:'rgba(239,68,68,.6)',borderRadius:4}
-  ]},options:{...chartDefaults,plugins:{...chartDefaults.plugins,legend:{display:true,labels:{color:'#94a3b8',font:{size:11}}}},scales:{...chartDefaults.scales,x:{...chartDefaults.scales.x,stacked:true},y:{...chartDefaults.scales.y,stacked:true}}}};
-  if(dailyC){dailyC.data=cfg.data;dailyC.update('none')}else{dailyC=new Chart(document.getElementById('dailyChart'),cfg)}
-}
+      function renderDailyChart(data) {
+        const labels = data.map((d) => {
+          const p = d.date.split("-");
+          return p[2] + "." + p[1];
+        });
+        const cfg = {
+          type: "bar",
+          data: {
+            labels,
+            datasets: [
+              {
+                label: "Успех",
+                data: data.map((d) => d.success || 0),
+                backgroundColor: "rgba(34,197,94,.6)",
+                borderRadius: 4,
+              },
+              {
+                label: "Ошибки",
+                data: data.map((d) => d.failed || 0),
+                backgroundColor: "rgba(239,68,68,.6)",
+                borderRadius: 4,
+              },
+            ],
+          },
+          options: {
+            ...chartDefaults,
+            plugins: {
+              ...chartDefaults.plugins,
+              legend: {
+                display: true,
+                labels: { color: "#94a3b8", font: { size: 11 } },
+              },
+            },
+            scales: {
+              ...chartDefaults.scales,
+              x: { ...chartDefaults.scales.x, stacked: true },
+              y: { ...chartDefaults.scales.y, stacked: true },
+            },
+          },
+        };
+        if (dailyC) {
+          dailyC.data = cfg.data;
+          dailyC.update("none");
+        } else {
+          dailyC = new Chart(document.getElementById("dailyChart"), cfg);
+        }
+      }
 
-function renderHourlyChart(data){
-  const full=Array.from({length:24},(_,i)=>({hour:i,count:0,success:0,failed:0}));
-  data.forEach(d=>{const h=Number(d.hour);full[h]={hour:h,count:Number(d.count),success:Number(d.success||0),failed:Number(d.failed||0)}});
-  const cfg={type:'line',data:{labels:full.map(d=>d.hour+':00'),datasets:[{label:'Запросы',data:full.map(d=>d.count),borderColor:'#6366f1',backgroundColor:'rgba(99,102,241,.1)',fill:true,tension:.3,pointRadius:3,pointBackgroundColor:'#6366f1'}]},options:chartDefaults};
-  if(hourlyC){hourlyC.data=cfg.data;hourlyC.update('none')}else{hourlyC=new Chart(document.getElementById('hourlyChart'),cfg)}
-}
+      function renderHourlyChart(data) {
+        const full = Array.from({ length: 24 }, (_, i) => ({
+          hour: i,
+          count: 0,
+          success: 0,
+          failed: 0,
+        }));
+        data.forEach((d) => {
+          const h = Number(d.hour);
+          full[h] = {
+            hour: h,
+            count: Number(d.count),
+            success: Number(d.success || 0),
+            failed: Number(d.failed || 0),
+          };
+        });
+        const cfg = {
+          type: "line",
+          data: {
+            labels: full.map((d) => d.hour + ":00"),
+            datasets: [
+              {
+                label: "Запросы",
+                data: full.map((d) => d.count),
+                borderColor: "#6366f1",
+                backgroundColor: "rgba(99,102,241,.1)",
+                fill: true,
+                tension: 0.3,
+                pointRadius: 3,
+                pointBackgroundColor: "#6366f1",
+              },
+            ],
+          },
+          options: chartDefaults,
+        };
+        if (hourlyC) {
+          hourlyC.data = cfg.data;
+          hourlyC.update("none");
+        } else {
+          hourlyC = new Chart(document.getElementById("hourlyChart"), cfg);
+        }
+      }
 
-function renderPerfChart(data){
-  const labels=data.map(d=>{const p=d.date.split('-');return p[2]+'.'+p[1]});
-  const cfg={type:'line',data:{labels,datasets:[{label:'Ср. время (ms)',data:data.map(d=>Math.round(d.avg_duration||0)),borderColor:'#f59e0b',backgroundColor:'rgba(245,158,11,.1)',fill:true,tension:.3,pointRadius:3,pointBackgroundColor:'#f59e0b'}]},options:chartDefaults};
-  if(perfC){perfC.data=cfg.data;perfC.update('none')}else{perfC=new Chart(document.getElementById('perfChart'),cfg)}
-}
+      function renderPerfChart(data) {
+        const labels = data.map((d) => {
+          const p = d.date.split("-");
+          return p[2] + "." + p[1];
+        });
+        const cfg = {
+          type: "line",
+          data: {
+            labels,
+            datasets: [
+              {
+                label: "Ср. время (ms)",
+                data: data.map((d) => Math.round(d.avg_duration || 0)),
+                borderColor: "#f59e0b",
+                backgroundColor: "rgba(245,158,11,.1)",
+                fill: true,
+                tension: 0.3,
+                pointRadius: 3,
+                pointBackgroundColor: "#f59e0b",
+              },
+            ],
+          },
+          options: chartDefaults,
+        };
+        if (perfC) {
+          perfC.data = cfg.data;
+          perfC.update("none");
+        } else {
+          perfC = new Chart(document.getElementById("perfChart"), cfg);
+        }
+      }
 
-function renderPlatformChart(data){
-  if(!data||!data.length){if(platformC){platformC.destroy();platformC=null}return}
-  const colors=['#6366f1','#ef4444','#06b6d4','#f59e0b','#22c55e'];
-  const cfg={type:'doughnut',data:{labels:data.map(d=>platformLabel(d.platform)),datasets:[{data:data.map(d=>Number(d.count)),backgroundColor:colors.slice(0,data.length),borderWidth:0}]},
-    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'bottom',labels:{color:'#94a3b8',font:{size:11},padding:14}}}}};
-  if(platformC){platformC.data=cfg.data;platformC.update('none')}else{platformC=new Chart(document.getElementById('platformChart'),cfg)}
-}
+      function renderPlatformChart(data) {
+        if (!data || !data.length) {
+          if (platformC) {
+            platformC.destroy();
+            platformC = null;
+          }
+          return;
+        }
+        const colors = ["#6366f1", "#ef4444", "#06b6d4", "#f59e0b", "#22c55e"];
+        const cfg = {
+          type: "doughnut",
+          data: {
+            labels: data.map((d) => platformLabel(d.platform)),
+            datasets: [
+              {
+                data: data.map((d) => Number(d.count)),
+                backgroundColor: colors.slice(0, data.length),
+                borderWidth: 0,
+              },
+            ],
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+              legend: {
+                position: "bottom",
+                labels: { color: "#94a3b8", font: { size: 11 }, padding: 14 },
+              },
+            },
+          },
+        };
+        if (platformC) {
+          platformC.data = cfg.data;
+          platformC.update("none");
+        } else {
+          platformC = new Chart(document.getElementById("platformChart"), cfg);
+        }
+      }
 
-function renderStatusChart(data){
-  if(!data||!data.length){if(statusC){statusC.destroy();statusC=null}return}
-  const cmap={success:'#22c55e',compressed:'#f59e0b',too_large:'#06b6d4',failed:'#ef4444'};
-  const nmap={success:'Успех',compressed:'Сжат',too_large:'Большой',failed:'Ошибка'};
-  const cfg={type:'doughnut',data:{labels:data.map(d=>nmap[d.status]||d.status),datasets:[{data:data.map(d=>Number(d.count)),backgroundColor:data.map(d=>cmap[d.status]||'#64748b'),borderWidth:0}]},
-    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'bottom',labels:{color:'#94a3b8',font:{size:11},padding:14}}}}};
-  if(statusC){statusC.data=cfg.data;statusC.update('none')}else{statusC=new Chart(document.getElementById('statusChart'),cfg)}
-}
+      function renderStatusChart(data) {
+        if (!data || !data.length) {
+          if (statusC) {
+            statusC.destroy();
+            statusC = null;
+          }
+          return;
+        }
+        const cmap = {
+          success: "#22c55e",
+          compressed: "#f59e0b",
+          too_large: "#06b6d4",
+          failed: "#ef4444",
+        };
+        const nmap = {
+          success: "Успех",
+          compressed: "Сжат",
+          too_large: "Большой",
+          failed: "Ошибка",
+        };
+        const cfg = {
+          type: "doughnut",
+          data: {
+            labels: data.map((d) => nmap[d.status] || d.status),
+            datasets: [
+              {
+                data: data.map((d) => Number(d.count)),
+                backgroundColor: data.map((d) => cmap[d.status] || "#64748b"),
+                borderWidth: 0,
+              },
+            ],
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+              legend: {
+                position: "bottom",
+                labels: { color: "#94a3b8", font: { size: 11 }, padding: 14 },
+              },
+            },
+          },
+        };
+        if (statusC) {
+          statusC.data = cfg.data;
+          statusC.update("none");
+        } else {
+          statusC = new Chart(document.getElementById("statusChart"), cfg);
+        }
+      }
 
-async function loadRecent(){
-  const status=document.getElementById('f-status').value;
-  const platform=document.getElementById('f-platform').value;
-  const chat_id=document.getElementById('f-chat').value.trim();
-  const params=new URLSearchParams({limit:PAGE_SIZE,offset:page*PAGE_SIZE});
-  if(status)params.set('status',status);
-  if(platform)params.set('platform',platform);
-  if(chat_id)params.set('chat_id',chat_id);
+      async function loadRecent() {
+        const status = document.getElementById("f-status").value;
+        const platform = document.getElementById("f-platform").value;
+        const chat_id = document.getElementById("f-chat").value.trim();
+        const params = new URLSearchParams({
+          limit: PAGE_SIZE,
+          offset: page * PAGE_SIZE,
+        });
+        if (status) params.set("status", status);
+        if (platform) params.set("platform", platform);
+        if (chat_id) params.set("chat_id", chat_id);
 
-  try{
-    const r=await fetch('/api/recent?'+params);const d=await r.json();
-    totalRows=d.total;
-    const tbody=document.getElementById('tbody');
-    tbody.innerHTML=d.items.map(j=>`<tr>
+        try {
+          const r = await fetch("/api/recent?" + params);
+          const d = await r.json();
+          totalRows = d.total;
+          const tbody = document.getElementById("tbody");
+          tbody.innerHTML = d.items
+            .map(
+              (j) => `<tr>
       <td>${fmtTime(j.ts)}</td>
-      <td>${j.first_name||j.username||j.chat_id}</td>
+      <td>${j.first_name || j.username || j.chat_id}</td>
       <td>${platformLabel(j.platform)}</td>
-      <td class="url-cell" title="${(j.url||'').replace(/"/g,'&quot;')}">${j.url||'—'}</td>
+      <td class="url-cell" title="${(j.url || "").replace(/"/g, "&quot;")}">${
+                j.url || "—"
+              }</td>
       <td>${statusBadge(j.status)}</td>
       <td>${fmtBytes(j.bytes)}</td>
       <td>${fmtMs(j.duration_ms)}</td>
-    </tr>`).join('');
+    </tr>`
+            )
+            .join("");
 
-    const pages=Math.ceil(totalRows/PAGE_SIZE);
-    document.getElementById('pg-info').textContent=`${page+1} / ${pages||1} (${totalRows})`;
-    document.getElementById('pg-prev').disabled=page<=0;
-    document.getElementById('pg-next').disabled=page>=pages-1;
-  }catch(e){console.error(e)}
-}
+          const pages = Math.ceil(totalRows / PAGE_SIZE);
+          document.getElementById("pg-info").textContent = `${page + 1} / ${
+            pages || 1
+          } (${totalRows})`;
+          document.getElementById("pg-prev").disabled = page <= 0;
+          document.getElementById("pg-next").disabled = page >= pages - 1;
+        } catch (e) {
+          console.error(e);
+        }
+      }
 
-document.getElementById('pg-prev').onclick=()=>{if(page>0){page--;loadRecent()}};
-document.getElementById('pg-next').onclick=()=>{page++;loadRecent()};
-document.getElementById('f-status').onchange=()=>{page=0;loadRecent()};
-document.getElementById('f-platform').onchange=()=>{page=0;loadRecent()};
-let chatTimer;
-document.getElementById('f-chat').oninput=()=>{clearTimeout(chatTimer);chatTimer=setTimeout(()=>{page=0;loadRecent()},400)};
+      document.getElementById("pg-prev").onclick = () => {
+        if (page > 0) {
+          page--;
+          loadRecent();
+        }
+      };
+      document.getElementById("pg-next").onclick = () => {
+        page++;
+        loadRecent();
+      };
+      document.getElementById("f-status").onchange = () => {
+        page = 0;
+        loadRecent();
+      };
+      document.getElementById("f-platform").onchange = () => {
+        page = 0;
+        loadRecent();
+      };
+      let chatTimer;
+      document.getElementById("f-chat").oninput = () => {
+        clearTimeout(chatTimer);
+        chatTimer = setTimeout(() => {
+          page = 0;
+          loadRecent();
+        }, 400);
+      };
 
-window.onload=()=>{
-  loadStats();loadCharts();loadRecent();
-  setInterval(loadStats,5000);
-  setInterval(loadCharts,30000);
-  setInterval(loadRecent,10000);
-};
-</script>
-</body>
+      window.onload = () => {
+        loadStats();
+        loadCharts();
+        loadRecent();
+        setInterval(loadStats, 15000);
+        setInterval(loadCharts, 30000);
+        setInterval(loadRecent, 15000);
+      };
+    </script>
+  </body>
 </html>

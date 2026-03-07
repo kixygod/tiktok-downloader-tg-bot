@@ -8,9 +8,10 @@ import {
   existsSync,
   readdirSync,
   renameSync,
+  copyFileSync,
 } from "node:fs";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import { Bot, InputFile } from "grammy";
 import { setTimeout as sleep } from "node:timers/promises";
 
@@ -24,13 +25,65 @@ const SIZE_LIMIT_MB = Number(process.env.SIZE_LIMIT_MB || "50");
 const MAX_BYTES = SIZE_LIMIT_MB * 1024 * 1024;
 
 const TMP_DIR = "/tmp/downloads";
+const CACHE_DIR = path.join(TMP_DIR, "cache");
+const CACHE_TTL_MS = 24 * 3600 * 1000;
+
 try {
   mkdirSync(TMP_DIR, { recursive: true });
+  mkdirSync(CACHE_DIR, { recursive: true });
 } catch (error) {
   console.warn(`Не удалось создать временную директорию ${TMP_DIR}:`, error);
 }
 
-// Флаг для полного отключения Xray/прокси (например, на VPS без блокировок)
+function getCacheKey(url: string): string {
+  return createHash("sha256").update(url).digest("hex").slice(0, 32);
+}
+
+function getCachedVideoPath(url: string): string | null {
+  const key = getCacheKey(url);
+  const cachePath = path.join(CACHE_DIR, `${key}.mp4`);
+  if (!existsSync(cachePath)) return null;
+  try {
+    const stat = statSync(cachePath);
+    if (Date.now() - stat.mtimeMs > CACHE_TTL_MS) return null;
+    if (stat.size === 0) return null;
+    return cachePath;
+  } catch {
+    return null;
+  }
+}
+
+function saveToCache(sourcePath: string, url: string): void {
+  try {
+    const key = getCacheKey(url);
+    const cachePath = path.join(CACHE_DIR, `${key}.mp4`);
+    copyFileSync(sourcePath, cachePath);
+    console.log(`📦 Видео сохранено в кэш: ${key}`);
+  } catch (e) {
+    console.warn("Не удалось сохранить в кэш:", e);
+  }
+}
+
+function cleanCacheOnStartup(): void {
+  try {
+    const files = readdirSync(CACHE_DIR);
+    const now = Date.now();
+    let removed = 0;
+    for (const f of files) {
+      const fp = path.join(CACHE_DIR, f);
+      try {
+        const stat = statSync(fp);
+        if (now - stat.mtimeMs > CACHE_TTL_MS) {
+          rmSync(fp, { force: true });
+          removed++;
+        }
+      } catch {}
+    }
+    if (removed > 0)
+      console.log(`🧹 Очищено ${removed} устаревших файлов из кэша`);
+  } catch {}
+}
+
 function parseBoolEnv(name: string, defaultValue: boolean): boolean {
   const raw = process.env[name];
   if (!raw) return defaultValue;
@@ -42,7 +95,6 @@ function parseBoolEnv(name: string, defaultValue: boolean): boolean {
 
 const XRAY_ENABLED = parseBoolEnv("USE_XRAY", true);
 
-// Прокси для fallback: сначала Shadowsocks, потом Hysteria2, потом VLESS
 const YTDLP_PROXY_SHADOWSOCKS = XRAY_ENABLED
   ? process.env.YTDLP_PROXY_SHADOWSOCKS || "http://xray-shadowsocks:1087"
   : process.env.YTDLP_PROXY_SHADOWSOCKS || "";
@@ -63,14 +115,12 @@ if (!XRAY_ENABLED) {
   );
 }
 
-// Функция для проверки доступности прокси (проверяет реальный HTTP запрос)
 async function isProxyAvailable(proxyUrl: string): Promise<boolean> {
   try {
     const url = new URL(proxyUrl);
     const hostname = url.hostname;
     const port = url.port || (url.protocol === "https:" ? "443" : "80");
 
-    // Пробуем резолвить hostname через DNS (быстрая проверка)
     const { lookup } = await import("node:dns/promises");
     try {
       await Promise.race([
@@ -79,20 +129,17 @@ async function isProxyAvailable(proxyUrl: string): Promise<boolean> {
           setTimeout(() => reject(new Error("timeout")), 1000)
         ),
       ]);
-      // DNS резолвится, считаем прокси доступным
+
       return true;
     } catch (e) {
-      // DNS не резолвится - возможно контейнер не запущен
       console.log(`⚠️ Прокси ${proxyUrl} недоступен (DNS не резолвится)`);
       return false;
     }
   } catch (e) {
-    // Если не удалось распарсить URL, все равно пробуем использовать
     return true;
   }
 }
 
-// Получаем список доступных прокси
 async function getAvailableProxies(): Promise<string[]> {
   if (!XRAY_ENABLED || PROXY_LIST.length === 0) {
     return [];
@@ -104,8 +151,7 @@ async function getAvailableProxies(): Promise<string[]> {
       available.push(proxy);
     }
   }
-  // Если ни один прокси не прошел проверку DNS, все равно возвращаем все
-  // (возможно, проверка DNS не работает в Docker сети, но прокси доступны)
+
   if (available.length === 0) {
     console.log("⚠️ DNS проверка не прошла, но пробуем все прокси");
     return PROXY_LIST;
@@ -189,14 +235,9 @@ async function ytDownload(
   const proxyNames = ["Shadowsocks", "Hysteria2", "VLESS"];
   let lastError: Error | null = null;
 
-  // Получаем список доступных прокси
-  const availableProxies = await getAvailableProxies();
-
-  // 1) Если Xray/прокси выключены — сразу пробуем yt-dlp НАПРЯМУЮ без прокси
-  if (!XRAY_ENABLED || (availableProxies.length === 0 && PROXY_LIST.length === 0)) {
+  if (!XRAY_ENABLED || PROXY_LIST.length === 0) {
     console.log("⚠️ Нет доступных прокси, пробуем yt-dlp без прокси...");
 
-    // Берём прогрессивный MP4 с H.264 (avc1) без мерджа/ffmpeg
     const args = [
       "-f",
       "best[ext=mp4][vcodec^=avc1]/best[ext=mp4]/best",
@@ -240,12 +281,14 @@ async function ytDownload(
           200
         )}`
       );
-      console.log("Все прямые попытки не сработали, пробуем альтернативные методы...");
+      console.log(
+        "Все прямые попытки не сработали, пробуем альтернативные методы..."
+      );
       return await tryAlternativeDownload(url, outPath);
     }
   }
 
-  // 2) Если прокси включены — пробуем каждый доступный прокси по очереди
+  const availableProxies = await getAvailableProxies();
   if (availableProxies.length === 0) {
     console.log("⚠️ Нет доступных прокси, пробуем альтернативные методы...");
     return await tryAlternativeDownload(url, outPath);
@@ -300,72 +343,76 @@ async function ytDownload(
       lastError = e;
       const errorMsg = e.message || String(e);
       console.log(`❌ ${proxyName} не сработал: ${errorMsg.substring(0, 200)}`);
-      // Продолжаем пробовать следующий прокси
+
       continue;
     }
   }
 
-  // Если все прокси не сработали, пробуем альтернативные методы
   console.log("Все прокси не сработали, пробуем альтернативные методы...");
   return await tryAlternativeDownload(url, outPath);
 }
 
-async function downloadImages(imageUrls: string[]): Promise<string[]> {
-  const downloadedImages: string[] = [];
+const IMAGE_DOWNLOAD_CONCURRENCY = 4;
+
+async function downloadSingleImage(
+  imageUrl: string,
+  index: number,
+  total: number
+): Promise<string | null> {
+  const imagePath = path.join(TMP_DIR, `image_${index}.jpg`);
   const proxyNames = ["Shadowsocks", "Hysteria2", "VLESS"];
 
-  for (let i = 0; i < imageUrls.length; i++) {
-    const imageUrl = imageUrls[i];
-    const imagePath = path.join(TMP_DIR, `image_${i}.jpg`);
-
-    let downloaded = false;
-
-    if (XRAY_ENABLED && PROXY_LIST.length > 0) {
-      // Пробуем каждый прокси для каждой картинки
-      for (let j = 0; j < PROXY_LIST.length && !downloaded; j++) {
-        const proxy = PROXY_LIST[j];
-        const proxyName = proxyNames[j] || `Proxy${j + 1}`;
-
-        try {
-          console.log(
-            `Downloading image ${i + 1}/${
-              imageUrls.length
-            } через ${proxyName}: ${imageUrl}`
-          );
-          const args = ["-L", "--proxy", proxy, "-o", imagePath, imageUrl];
-          await run("curl", args);
-          downloadedImages.push(imagePath);
-          downloaded = true;
-        } catch (e) {
-          console.log(
-            `Failed to download image ${i + 1} через ${proxyName}: ${e}`
-          );
-          if (j === PROXY_LIST.length - 1) {
-            console.log(`Все прокси не сработали для изображения ${i + 1}`);
-          }
-        }
-      }
-    }
-
-    // Если прокси выключены или все не сработали - пробуем без прокси
-    if (!downloaded) {
+  if (XRAY_ENABLED && PROXY_LIST.length > 0) {
+    for (let j = 0; j < PROXY_LIST.length; j++) {
+      const proxy = PROXY_LIST[j];
+      const proxyName = proxyNames[j] || `Proxy${j + 1}`;
       try {
-        console.log(
-          `Downloading image ${i + 1}/${imageUrls.length} без прокси: ${imageUrl}`
-        );
-        const args = ["-L", "-o", imagePath, imageUrl];
+        const args = ["-L", "--proxy", proxy, "-o", imagePath, imageUrl];
         await run("curl", args);
-        downloadedImages.push(imagePath);
-        downloaded = true;
+        return imagePath;
       } catch (e) {
-        console.log(
-          `Failed to download image ${i + 1} без прокси: ${e}`
-        );
+        if (j === PROXY_LIST.length - 1) {
+          console.log(
+            `Прокси не сработали для изображения ${index + 1}/${total}`
+          );
+        }
       }
     }
   }
 
-  return downloadedImages;
+  try {
+    const args = ["-L", "-o", imagePath, imageUrl];
+    await run("curl", args);
+    return imagePath;
+  } catch (e) {
+    console.log(`Failed to download image ${index + 1}/${total}: ${e}`);
+    return null;
+  }
+}
+
+async function downloadImages(imageUrls: string[]): Promise<string[]> {
+  const downloadedImages: (string | null)[] = new Array(imageUrls.length);
+
+  for (
+    let chunkStart = 0;
+    chunkStart < imageUrls.length;
+    chunkStart += IMAGE_DOWNLOAD_CONCURRENCY
+  ) {
+    const chunk = imageUrls.slice(
+      chunkStart,
+      chunkStart + IMAGE_DOWNLOAD_CONCURRENCY
+    );
+    const results = await Promise.all(
+      chunk.map((url, idx) =>
+        downloadSingleImage(url, chunkStart + idx, imageUrls.length)
+      )
+    );
+    for (let i = 0; i < results.length; i++) {
+      downloadedImages[chunkStart + i] = results[i];
+    }
+  }
+
+  return downloadedImages.filter((p): p is string => p !== null);
 }
 
 async function sendImagesInBatches(
@@ -421,12 +468,11 @@ async function tryAlternativeDownload(
     }`,
   ];
 
-  // Получаем доступные прокси для fetch запросов
-  const availableProxies = await getAvailableProxies();
+  const availableProxies =
+    XRAY_ENABLED && PROXY_LIST.length > 0 ? await getAvailableProxies() : [];
   const proxyNames = ["Shadowsocks", "Hysteria2", "VLESS"];
 
   for (const serviceUrl of services) {
-    // Пробуем каждый доступный прокси для запроса к сервису
     let serviceSuccess = false;
     for (let i = 0; i < availableProxies.length && !serviceSuccess; i++) {
       const proxy = availableProxies[i];
@@ -437,7 +483,6 @@ async function tryAlternativeDownload(
       try {
         console.log(`Trying service через ${proxyName}: ${serviceUrl}`);
 
-        // Используем HttpsProxyAgent если доступен
         let fetchOptions: RequestInit = {
           headers: {
             "User-Agent":
@@ -446,16 +491,12 @@ async function tryAlternativeDownload(
           signal: AbortSignal.timeout(15000),
         };
 
-        // Пробуем использовать прокси через переменные окружения для fetch
-        // В Node.js 18+ fetch не поддерживает прокси напрямую, используем curl
         const curlArgs = ["-L", "--proxy", proxy, serviceUrl];
         const curlOutput = await new Promise<string>((resolve, reject) => {
           const curl = spawn("curl", curlArgs);
           let output = "";
           curl.stdout.on("data", (data: Buffer) => (output += data.toString()));
-          curl.stderr.on("data", (data: Buffer) => {
-            // Игнорируем stderr, если это не ошибка
-          });
+          curl.stderr.on("data", (data: Buffer) => {});
           curl.on("close", (code: number) => {
             if (code === 0) resolve(output);
             else reject(new Error(`curl exit ${code}`));
@@ -488,12 +529,11 @@ async function tryAlternativeDownload(
         }
       } catch (e: any) {
         console.log(`Service failed через ${proxyName}: ${e.message || e}`);
-        // Продолжаем пробовать следующий прокси
+
         continue;
       }
     }
 
-    // Если все прокси не сработали для этого сервиса, пробуем без прокси
     if (!serviceSuccess) {
       try {
         console.log(`Trying service без прокси: ${serviceUrl}`);
@@ -544,11 +584,11 @@ async function downloadVideo(videoUrl: string, outPath: string): Promise<void> {
   const proxyNames = ["Shadowsocks", "Hysteria2", "VLESS"];
   let lastError: Error | null = null;
 
-  // Получаем список доступных прокси
-  const availableProxies = await getAvailableProxies();
-  const proxiesToTry = availableProxies.length > 0 ? availableProxies : PROXY_LIST;
+  const availableProxies =
+    XRAY_ENABLED && PROXY_LIST.length > 0 ? await getAvailableProxies() : [];
+  const proxiesToTry =
+    availableProxies.length > 0 ? availableProxies : PROXY_LIST;
 
-  // Пробуем каждый доступный прокси по очереди (если вообще есть)
   for (let i = 0; i < proxiesToTry.length; i++) {
     const proxy = proxiesToTry[i];
     const originalIndex = PROXY_LIST.indexOf(proxy);
@@ -564,12 +604,11 @@ async function downloadVideo(videoUrl: string, outPath: string): Promise<void> {
     } catch (e: any) {
       lastError = e;
       console.log(`❌ ${proxyName} не сработал: ${e.message || e}`);
-      // Продолжаем пробовать следующий прокси
+
       continue;
     }
   }
 
-  // Всегда пробуем без прокси как последний шаг
   try {
     console.log("Пробуем скачать видео без прокси (curl без --proxy)...");
     await run("curl", ["-L", "-o", outPath, videoUrl]);
@@ -579,7 +618,6 @@ async function downloadVideo(videoUrl: string, outPath: string): Promise<void> {
     lastError = e;
   }
 
-  // Если все не сработало, выбрасываем ошибку
   throw new Error(
     `Не удалось скачать видео через все прокси. Последняя ошибка: ${
       lastError?.message || "unknown"
@@ -711,6 +749,20 @@ const worker = new Worker(
 
     try {
       const expandedUrl = await expandUrl(url);
+
+      const cachedPath = getCachedVideoPath(expandedUrl);
+      if (cachedPath) {
+        console.log(`📦 Кэш-хит, используем сохранённое видео`);
+        const bytes = statSync(cachedPath).size;
+        await bot.api.sendChatAction(chatId, "upload_video");
+        await bot.api.sendVideo(chatId, new InputFile(cachedPath), {
+          reply_to_message_id: messageId,
+        });
+        await bot.api.deleteMessage(chatId, ackMessageId).catch(() => {});
+        await recordStat(buildStatPayload(job, started, "success", bytes));
+        return;
+      }
+
       const result = await ytDownload(expandedUrl, raw);
 
       if (result.type === "images") {
@@ -777,6 +829,7 @@ const worker = new Worker(
         });
         await bot.api.deleteMessage(chatId, ackMessageId).catch(() => {});
 
+        saveToCache(out, expandedUrl);
         await recordStat(buildStatPayload(job, started, "compressed", bytes));
         return;
       }
@@ -787,6 +840,7 @@ const worker = new Worker(
       });
       await bot.api.deleteMessage(chatId, ackMessageId).catch(() => {});
 
+      saveToCache(videoPath, expandedUrl);
       await recordStat(buildStatPayload(job, started, "success", bytes));
     } catch (e: any) {
       console.error(`Job ${job.id} failed:`, e);
@@ -796,7 +850,13 @@ const worker = new Worker(
         `❌ Ошибка: ${e.message || e}`
       );
       await recordStat(
-        buildStatPayload(job, started, "failed", 0, String(e.message || e).slice(0, 500))
+        buildStatPayload(
+          job,
+          started,
+          "failed",
+          0,
+          String(e.message || e).slice(0, 500)
+        )
       );
       throw e;
     } finally {
@@ -826,10 +886,10 @@ worker.on("error", (err) => {
   console.error("Worker error:", err);
 });
 
+cleanCacheOnStartup();
 console.log("🔧 Worker started successfully");
 console.log(`📊 Concurrency: ${process.env.MAX_CONCURRENCY || "2"}`);
 console.log(`📏 Size limit: ${SIZE_LIMIT_MB} MB`);
 console.log(
   `🌐 Proxies: Shadowsocks=${YTDLP_PROXY_SHADOWSOCKS}, Hysteria2=${YTDLP_PROXY_HYSTERIA2}, VLESS=${YTDLP_PROXY_VLESS}`
 );
-

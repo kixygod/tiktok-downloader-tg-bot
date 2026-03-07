@@ -8,8 +8,6 @@ import { ProxyAgent, setGlobalDispatcher } from "undici";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-// ── env ──────────────────────────────────────────────────────────────────────
-
 const token = process.env.BOT_TOKEN!;
 const sizeLimitMB = Number(process.env.SIZE_LIMIT_MB ?? "50");
 const adminChatId = process.env.ADMIN_CHAT_ID
@@ -28,8 +26,6 @@ if (!token) {
   process.exit(1);
 }
 
-// ── proxy ────────────────────────────────────────────────────────────────────
-
 const proxyUrl = process.env.HTTPS_PROXY || process.env.HTTP_PROXY;
 if (proxyUrl) {
   console.log(`🔗 Configuring global proxy: ${proxyUrl}`);
@@ -39,16 +35,12 @@ if (proxyUrl) {
   console.log("⚠️ No proxy configured - using direct connection");
 }
 
-// ── bot + redis queue ────────────────────────────────────────────────────────
-
 const bot = new Bot(token);
 
 const redisUrl = process.env.REDIS_URL!;
 const queueName = process.env.QUEUE_NAME || "tiktok";
 const connection = new IORedis(redisUrl, { maxRetriesPerRequest: null });
 const queue = new Queue(queueName, { connection });
-
-// ── PostgreSQL ───────────────────────────────────────────────────────────────
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
@@ -78,18 +70,19 @@ async function initDB() {
         CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs (status);
         CREATE INDEX IF NOT EXISTS idx_jobs_platform ON jobs (platform);
         CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs (created_at);
+        CREATE INDEX IF NOT EXISTS idx_jobs_ts_status ON jobs (ts, status);
       `);
       console.log("✅ PostgreSQL tables initialized");
       return;
     } catch (err: any) {
-      console.log(`⏳ PostgreSQL not ready (attempt ${attempt}/${MAX_RETRIES}): ${err.message}`);
+      console.log(
+        `⏳ PostgreSQL not ready (attempt ${attempt}/${MAX_RETRIES}): ${err.message}`
+      );
       if (attempt === MAX_RETRIES) throw err;
       await new Promise((r) => setTimeout(r, 3000));
     }
   }
 }
-
-// ── helpers ──────────────────────────────────────────────────────────────────
 
 const SUPPORTED_URL_PATTERNS: { pattern: RegExp; platform: string }[] = [
   {
@@ -116,14 +109,22 @@ function extractSupportedUrl(
   return null;
 }
 
+const AVG_TIME_CACHE_TTL_MS = 60_000;
+let avgTimeCache: { value: number; expiresAt: number } | null = null;
+
 async function getAverageProcessingTime(): Promise<number> {
+  if (avgTimeCache && Date.now() < avgTimeCache.expiresAt) {
+    return avgTimeCache.value;
+  }
   try {
     const since = Date.now() - 7 * 24 * 3600_000;
     const { rows } = await pool.query(
       `SELECT AVG(duration_ms) as avg FROM jobs WHERE status = 'success' AND ts > $1 AND duration_ms > 0`,
       [since]
     );
-    return Math.round(rows[0]?.avg ?? 0);
+    const value = Math.round(rows[0]?.avg ?? 0);
+    avgTimeCache = { value, expiresAt: Date.now() + AVG_TIME_CACHE_TTL_MS };
+    return value;
   } catch {
     return 0;
   }
@@ -146,8 +147,6 @@ function fmtDuration(ms: number): string {
 function escapeHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
-
-// ── admin commands ───────────────────────────────────────────────────────────
 
 function isAdmin(chatId: number): boolean {
   return adminChatId !== null && chatId === adminChatId;
@@ -206,7 +205,8 @@ async function cmdHelp(ctx: any): Promise<boolean> {
 
 async function cmdStats(ctx: any, _args: string[]): Promise<boolean> {
   const now = Date.now();
-  const { rows } = await pool.query(`
+  const { rows } = await pool.query(
+    `
     SELECT
       COUNT(*) FILTER (WHERE ts >= $1)                            AS d_total,
       COUNT(*) FILTER (WHERE ts >= $1 AND status='success')       AS d_ok,
@@ -219,12 +219,13 @@ async function cmdStats(ctx: any, _args: string[]): Promise<boolean> {
       COUNT(DISTINCT chat_id)                                      AS unique_chats,
       COUNT(DISTINCT user_id) FILTER (WHERE user_id IS NOT NULL)   AS unique_users
     FROM jobs
-  `, [now - 86400_000, now - 7 * 86400_000, now - 30 * 86400_000]);
+  `,
+    [now - 86400_000, now - 7 * 86400_000, now - 30 * 86400_000]
+  );
 
   const r = rows[0];
-  const successRate = r.d_total > 0
-    ? Math.round((r.d_ok / r.d_total) * 100)
-    : 0;
+  const successRate =
+    r.d_total > 0 ? Math.round((r.d_ok / r.d_total) * 100) : 0;
 
   const msg = [
     "<b>📊 Статистика бота</b>",
@@ -263,7 +264,8 @@ async function cmdPeriod(ctx: any, period: string): Promise<boolean> {
       break;
   }
 
-  const { rows } = await pool.query(`
+  const { rows } = await pool.query(
+    `
     SELECT
       COUNT(*)                                                     AS total,
       COUNT(*) FILTER (WHERE status = 'success')                   AS ok,
@@ -278,15 +280,20 @@ async function cmdPeriod(ctx: any, period: string): Promise<boolean> {
       COUNT(DISTINCT user_id) FILTER (WHERE user_id IS NOT NULL)   AS users
     FROM jobs
     WHERE ts >= $1
-  `, [since]);
+  `,
+    [since]
+  );
 
   const r = rows[0];
 
-  const platformQ = await pool.query(`
+  const platformQ = await pool.query(
+    `
     SELECT platform, COUNT(*) AS cnt
     FROM jobs WHERE ts >= $1 AND platform IS NOT NULL
     GROUP BY platform ORDER BY cnt DESC
-  `, [since]);
+  `,
+    [since]
+  );
 
   const platforms = platformQ.rows
     .map((p: any) => `  ${p.platform}: ${p.cnt}`)
@@ -302,7 +309,11 @@ async function cmdPeriod(ctx: any, period: string): Promise<boolean> {
     `  ❌ Ошибки: ${r.failed}`,
     "",
     `📦 Трафик: ${fmtBytes(Number(r.total_bytes))}`,
-    `⏱ Время: avg ${fmtDuration(Math.round(Number(r.avg_ms)))} / min ${fmtDuration(Number(r.min_ms))} / max ${fmtDuration(Number(r.max_ms))}`,
+    `⏱ Время: avg ${fmtDuration(
+      Math.round(Number(r.avg_ms))
+    )} / min ${fmtDuration(Number(r.min_ms))} / max ${fmtDuration(
+      Number(r.max_ms)
+    )}`,
     `👥 Чатов: ${r.chats} | Юзеров: ${r.users}`,
     "",
     `<b>Платформы:</b>`,
@@ -315,7 +326,8 @@ async function cmdPeriod(ctx: any, period: string): Promise<boolean> {
 
 async function cmdTop(ctx: any, args: string[]): Promise<boolean> {
   const limit = Math.min(Number(args[0]) || 10, 50);
-  const { rows } = await pool.query(`
+  const { rows } = await pool.query(
+    `
     SELECT chat_id, 
            MAX(first_name) AS name,
            COUNT(*) AS cnt,
@@ -325,19 +337,19 @@ async function cmdTop(ctx: any, args: string[]): Promise<boolean> {
     GROUP BY chat_id
     ORDER BY cnt DESC
     LIMIT $1
-  `, [limit]);
+  `,
+    [limit]
+  );
 
   const lines = rows.map((r: any, i: number) => {
     const name = r.name ? escapeHtml(r.name) : String(r.chat_id);
     const ago = Math.round((Date.now() - Number(r.last_used)) / 3600_000);
-    return `${i + 1}. ${name} — ${r.cnt} запросов (${fmtBytes(Number(r.total_bytes))}, ${ago}ч назад)`;
+    return `${i + 1}. ${name} — ${r.cnt} запросов (${fmtBytes(
+      Number(r.total_bytes)
+    )}, ${ago}ч назад)`;
   });
 
-  const msg = [
-    `<b>🏆 Топ-${limit} чатов</b>`,
-    "",
-    ...lines,
-  ].join("\n");
+  const msg = [`<b>🏆 Топ-${limit} чатов</b>`, "", ...lines].join("\n");
 
   await ctx.reply(msg, { parse_mode: "HTML" });
   return true;
@@ -345,13 +357,16 @@ async function cmdTop(ctx: any, args: string[]): Promise<boolean> {
 
 async function cmdErrors(ctx: any, args: string[]): Promise<boolean> {
   const limit = Math.min(Number(args[0]) || 10, 30);
-  const { rows } = await pool.query(`
+  const { rows } = await pool.query(
+    `
     SELECT ts, url, chat_id, first_name, error_message, duration_ms
     FROM jobs
     WHERE status = 'failed'
     ORDER BY ts DESC
     LIMIT $1
-  `, [limit]);
+  `,
+    [limit]
+  );
 
   if (rows.length === 0) {
     await ctx.reply("🎉 Ошибок не найдено!");
@@ -367,11 +382,9 @@ async function cmdErrors(ctx: any, args: string[]): Promise<boolean> {
     return `• <b>${ago}м назад</b> | ${name}\n  ${err}`;
   });
 
-  const msg = [
-    `<b>❌ Последние ${rows.length} ошибок</b>`,
-    "",
-    ...lines,
-  ].join("\n");
+  const msg = [`<b>❌ Последние ${rows.length} ошибок</b>`, "", ...lines].join(
+    "\n"
+  );
 
   await ctx.reply(msg, { parse_mode: "HTML" });
   return true;
@@ -403,8 +416,6 @@ async function cmdLive(ctx: any): Promise<boolean> {
   await ctx.reply(msg, { parse_mode: "HTML" });
   return true;
 }
-
-// ── message handler ──────────────────────────────────────────────────────────
 
 bot.on("message:text", async (ctx: any) => {
   const text = (ctx.message.text || ctx.message.caption || "").trim();
@@ -482,35 +493,65 @@ bot.catch((err: any) => {
   }
 });
 
-// ── Fastify server ───────────────────────────────────────────────────────────
-
 const fastify = Fastify({ logger: true });
 
 async function startServer() {
   fastify.get("/health", async () => ({ ok: true }));
 
-  // Worker calls this to record job results
   fastify.post("/stats", async (request: any) => {
     const {
-      ts, url, status, bytes, duration_ms, chat_id,
-      user_id, username, first_name, platform, error_message,
+      ts,
+      url,
+      status,
+      bytes,
+      duration_ms,
+      chat_id,
+      user_id,
+      username,
+      first_name,
+      platform,
+      error_message,
     } = request.body as any;
 
     await pool.query(
       `INSERT INTO jobs (ts, url, chat_id, user_id, username, first_name, platform, status, bytes, duration_ms, error_message)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
-      [ts, url, chat_id, user_id ?? null, username ?? null, first_name ?? null,
-       platform ?? null, status, bytes, duration_ms, error_message ?? null]
+      [
+        ts,
+        url,
+        chat_id,
+        user_id ?? null,
+        username ?? null,
+        first_name ?? null,
+        platform ?? null,
+        status,
+        bytes,
+        duration_ms,
+        error_message ?? null,
+      ]
     );
 
     return { ok: true };
   });
 
-  // ── API endpoints for dashboard ──────────────────────────────────────────
+  const API_CACHE_TTL_MS = 10_000;
+  const apiCache = new Map<string, { data: any; expiresAt: number }>();
+
+  function getCached<T>(key: string, fetcher: () => Promise<T>): Promise<T> {
+    const cached = apiCache.get(key);
+    if (cached && Date.now() < cached.expiresAt)
+      return Promise.resolve(cached.data);
+    return fetcher().then((data) => {
+      apiCache.set(key, { data, expiresAt: Date.now() + API_CACHE_TTL_MS });
+      return data;
+    });
+  }
 
   fastify.get("/api/stats", async (request: any) => {
-    const now = Date.now();
-    const { rows } = await pool.query(`
+    return getCached("stats", async () => {
+      const now = Date.now();
+      const { rows } = await pool.query(
+        `
       SELECT
         COUNT(*) FILTER (WHERE ts >= $1) AS d_total,
         COUNT(*) FILTER (WHERE ts >= $2) AS w_total,
@@ -525,32 +566,41 @@ async function startServer() {
         COUNT(DISTINCT chat_id)                        AS unique_chats,
         COUNT(DISTINCT user_id) FILTER (WHERE user_id IS NOT NULL) AS unique_users
       FROM jobs
-    `, [now - 86400_000, now - 7 * 86400_000, now - 30 * 86400_000]);
+    `,
+        [now - 86400_000, now - 7 * 86400_000, now - 30 * 86400_000]
+      );
 
-    const r = rows[0];
-    const proxyEnabled = !!(process.env.HTTP_PROXY || process.env.HTTPS_PROXY || process.env.ALL_PROXY);
+      const r = rows[0];
+      const proxyEnabled = !!(
+        process.env.HTTP_PROXY ||
+        process.env.HTTPS_PROXY ||
+        process.env.ALL_PROXY
+      );
 
-    return {
-      daily: Number(r.d_total),
-      weekly: Number(r.w_total),
-      monthly: Number(r.m_total),
-      total: Number(r.all_total),
-      traffic: Math.round((Number(r.all_bytes) / 1024 / 1024) * 10) / 10,
-      avgDuration: Math.round(Number(r.avg_ms)),
-      totalSuccess: Number(r.total_success),
-      totalFailed: Number(r.total_failed),
-      totalCompressed: Number(r.total_compressed),
-      totalTooLarge: Number(r.total_too_large),
-      uniqueChats: Number(r.unique_chats),
-      uniqueUsers: Number(r.unique_users),
-      proxyEnabled,
-    };
+      return {
+        daily: Number(r.d_total),
+        weekly: Number(r.w_total),
+        monthly: Number(r.m_total),
+        total: Number(r.all_total),
+        traffic: Math.round((Number(r.all_bytes) / 1024 / 1024) * 10) / 10,
+        avgDuration: Math.round(Number(r.avg_ms)),
+        totalSuccess: Number(r.total_success),
+        totalFailed: Number(r.total_failed),
+        totalCompressed: Number(r.total_compressed),
+        totalTooLarge: Number(r.total_too_large),
+        uniqueChats: Number(r.unique_chats),
+        uniqueUsers: Number(r.unique_users),
+        proxyEnabled,
+      };
+    });
   });
 
   fastify.get("/api/charts", async (request: any) => {
-    const now = Date.now();
+    return getCached("charts", async () => {
+      const now = Date.now();
 
-    const hourlyQ = await pool.query(`
+      const hourlyQ = await pool.query(
+        `
       SELECT
         EXTRACT(HOUR FROM to_timestamp(ts / 1000.0))::int AS hour,
         COUNT(*) AS count,
@@ -558,9 +608,12 @@ async function startServer() {
         COUNT(*) FILTER (WHERE status = 'failed')  AS failed
       FROM jobs WHERE ts >= $1
       GROUP BY hour ORDER BY hour
-    `, [now - 86400_000]);
+    `,
+        [now - 86400_000]
+      );
 
-    const dailyQ = await pool.query(`
+      const dailyQ = await pool.query(
+        `
       SELECT
         to_char(to_timestamp(ts / 1000.0), 'YYYY-MM-DD') AS date,
         COUNT(*) AS count,
@@ -570,31 +623,45 @@ async function startServer() {
         COALESCE(SUM(bytes), 0) AS total_bytes
       FROM jobs WHERE ts >= $1
       GROUP BY date ORDER BY date
-    `, [now - 30 * 86400_000]);
+    `,
+        [now - 30 * 86400_000]
+      );
 
-    const platformQ = await pool.query(`
+      const platformQ = await pool.query(
+        `
       SELECT platform, COUNT(*) AS count
       FROM jobs WHERE ts >= $1 AND platform IS NOT NULL
       GROUP BY platform ORDER BY count DESC
-    `, [now - 30 * 86400_000]);
+    `,
+        [now - 30 * 86400_000]
+      );
 
-    const statusQ = await pool.query(`
+      const statusQ = await pool.query(
+        `
       SELECT status, COUNT(*) AS count
       FROM jobs WHERE ts >= $1
       GROUP BY status
-    `, [now - 30 * 86400_000]);
+    `,
+        [now - 30 * 86400_000]
+      );
 
-    return {
-      hourly: hourlyQ.rows,
-      daily: dailyQ.rows,
-      platforms: platformQ.rows,
-      statuses: statusQ.rows,
-    };
+      return {
+        hourly: hourlyQ.rows,
+        daily: dailyQ.rows,
+        platforms: platformQ.rows,
+        statuses: statusQ.rows,
+      };
+    });
   });
 
   fastify.get("/api/recent", async (request: any) => {
-    const { limit = 50, offset = 0, status, platform, chat_id } =
-      (request as any).query;
+    const {
+      limit = 50,
+      offset = 0,
+      status,
+      platform,
+      chat_id,
+    } = (request as any).query;
 
     let where = "WHERE 1=1";
     const params: any[] = [];
@@ -632,12 +699,12 @@ async function startServer() {
     };
   });
 
-  // ── dashboard (basic auth) ──────────────────────────────────────────────
-
   await fastify.register(async function (fastify) {
     await fastify.register(fastifyBasicAuth, {
       validate: async (username: any, password: any) => {
-        const [u, p] = (process.env.DASHBOARD_BASIC_AUTH ?? "admin:admin").split(":");
+        const [u, p] = (
+          process.env.DASHBOARD_BASIC_AUTH ?? "admin:admin"
+        ).split(":");
         if (username !== u || password !== p) throw new Error("Auth failed");
       },
       authenticate: true,
@@ -649,7 +716,10 @@ async function startServer() {
 
     fastify.get("/dashboard", async (_req: any, reply: any) => {
       try {
-        const html = readFileSync(join(__dirname, "..", "dashboard.html"), "utf-8");
+        const html = readFileSync(
+          join(__dirname, "..", "dashboard.html"),
+          "utf-8"
+        );
         reply.type("text/html").send(html);
       } catch (error) {
         console.error("Error reading dashboard.html:", error);
@@ -667,8 +737,6 @@ async function startServer() {
   });
 }
 
-// ── startup ──────────────────────────────────────────────────────────────────
-
 async function main() {
   await initDB();
   await startServer();
@@ -680,7 +748,10 @@ async function main() {
 
   if (adminChatId) {
     bot.api
-      .sendMessage(adminChatId, "🟢 Бот запущен и готов к работе!\n/help — список команд")
+      .sendMessage(
+        adminChatId,
+        "🟢 Бот запущен и готов к работе!\n/help — список команд"
+      )
       .catch(() => {});
   }
 
