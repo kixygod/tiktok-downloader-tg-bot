@@ -928,23 +928,28 @@ const worker = new Worker(
 
       saveToCache(videoPath, expandedUrl);
       await recordStat(buildStatPayload(job, started, "success", bytes));
-    } catch (e: any) {
-      console.error(`Job ${job.id} failed:`, e);
-      await bot.api.editMessageText(
-        chatId,
-        ackMessageId,
-        `❌ Ошибка: ${e.message || e}`
-      );
+    } catch (e: unknown) {
+      const err = e instanceof Error ? e : new Error(String(e));
+      console.error(`Job ${job.id} failed:`, err);
+      const errorText = `❌ Ошибка: ${err.message}`;
+      try {
+        await bot.api.editMessageText(chatId, ackMessageId, errorText);
+      } catch (editErr: unknown) {
+        const desc = (editErr as { description?: string })?.description ?? "";
+        if (!desc.includes("message is not modified")) {
+          console.warn("editMessageText failed:", editErr);
+        }
+      }
       await recordStat(
         buildStatPayload(
           job,
           started,
           "failed",
           0,
-          String(e.message || e).slice(0, 500)
+          err.message.slice(0, 500)
         )
       );
-      throw e;
+      throw err;
     } finally {
       try {
         rmSync(raw, { force: true });
