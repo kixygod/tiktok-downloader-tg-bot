@@ -370,6 +370,42 @@
         font-size: 0.75rem;
         color: var(--red);
       }
+      .user-cell {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .user-avatar {
+        width: 28px;
+        height: 28px;
+        border-radius: 50%;
+        object-fit: cover;
+        flex-shrink: 0;
+      }
+      .user-avatar-placeholder {
+        width: 28px;
+        height: 28px;
+        border-radius: 50%;
+        background: var(--bg3);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 0.7rem;
+        color: var(--muted);
+        flex-shrink: 0;
+      }
+      .user-name {
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .chat-type-badge {
+        font-size: 0.65rem;
+        padding: 1px 5px;
+        border-radius: 4px;
+        background: rgba(99,102,241,.2);
+        color: var(--accent2);
+      }
 
       @media (max-width: 900px) {
         .charts-grid,
@@ -526,7 +562,8 @@
           <thead>
             <tr>
               <th>Время</th>
-              <th>Юзер</th>
+              <th>Пользователь</th>
+              <th>Чат</th>
               <th>Платформа</th>
               <th>Ссылка</th>
               <th>Статус</th>
@@ -667,7 +704,13 @@
           }
           if (d.topUsers && d.topUsers.length) {
             document.getElementById("topUsers").innerHTML = d.topUsers
-              .map((u, i) => `<div class="row"><span>${i + 1}. ${escapeHtml(u.name)}</span><span>${u.count} (${fmtBytes(u.bytes)})</span></div>`)
+              .map((u, i) => {
+                const link = u.profileUrl
+                  ? `<a href="${escapeHtml(u.profileUrl)}" target="_blank" rel="noopener">${escapeHtml(u.name)}</a>`
+                  : escapeHtml(u.name);
+                const avatar = `<img class="user-avatar" src="${escapeHtml(u.avatarUrl)}" alt="" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';" /><span class="user-avatar-placeholder" style="display:none">?</span>`;
+                return `<div class="row user-row"><span><span class="user-cell">${avatar}${link}</span></span><span>${u.count} (${fmtBytes(u.bytes)})</span></div>`;
+              })
               .join("");
           } else {
             document.getElementById("topUsers").innerHTML = "<div class='row'><span>—</span></div>";
@@ -957,15 +1000,31 @@
           const d = await r.json();
           totalRows = d.total;
           const tbody = document.getElementById("tbody");
+          function chatTypeLabel(t) {
+            return { private: "Личка", group: "Группа", supergroup: "Группа", channel: "Канал" }[t] || t || "";
+          }
           tbody.innerHTML = d.items
             .map(
               (j) => {
                 const url = j.url || "";
                 const urlDisplay = url ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(url)}</a>` : "—";
                 const err = j.error_message ? escapeHtml(String(j.error_message).slice(0, 80)) : "";
+                const userName = j.first_name || j.username || (j.user_id ? "id" + j.user_id : "") || j.chat_id || "—";
+                const userLink = j.userProfileUrl
+                  ? `<a href="${escapeHtml(j.userProfileUrl)}" target="_blank" rel="noopener" class="user-name">${escapeHtml(userName)}</a>`
+                  : `<span class="user-name">${escapeHtml(userName)}</span>`;
+                const avatarHtml = j.user_id
+                  ? `<img class="user-avatar" src="/api/avatar/${j.user_id}" alt="" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';" /><span class="user-avatar-placeholder" style="display:none">?</span>`
+                  : `<span class="user-avatar-placeholder">—</span>`;
+                const chatTitle = j.chatTitle || (j.chat_id ? "Chat " + j.chat_id : "—");
+                const chatLink = j.chatUrl
+                  ? `<a href="${escapeHtml(j.chatUrl)}" target="_blank" rel="noopener">${escapeHtml(chatTitle)}</a>`
+                  : escapeHtml(chatTitle);
+                const chatBadge = j.chatType ? `<span class="chat-type-badge">${chatTypeLabel(j.chatType)}</span> ` : "";
                 return `<tr>
       <td>${fmtTime(j.ts)}</td>
-      <td>${escapeHtml(j.first_name || j.username || j.chat_id || "")}</td>
+      <td><div class="user-cell">${avatarHtml}${userLink}</div></td>
+      <td>${chatBadge}${chatLink}</td>
       <td>${platformLabel(j.platform)}</td>
       <td class="url-cell" title="${escapeHtml(url)}">${urlDisplay}</td>
       <td>${statusBadge(j.status)}</td>

@@ -206,7 +206,7 @@ async function cmdHelp(ctx: any): Promise<boolean> {
     "/week — детали за неделю",
     "/month — детали за месяц",
     "/all — за всё время",
-    "/top [N] — топ чатов по использованию",
+    "/top [N] — топ пользователей по использованию",
     "/errors [N] — последние ошибки",
     "/live — текущая очередь и воркеры",
     "/help — эта справка",
@@ -340,13 +340,15 @@ async function cmdTop(ctx: any, args: string[]): Promise<boolean> {
   const limit = Math.min(Number(args[0]) || 10, 50);
   const { rows } = await pool.query(
     `
-    SELECT chat_id, 
+    SELECT user_id, 
            MAX(first_name) AS name,
+           MAX(username) AS username,
            COUNT(*) AS cnt,
            COALESCE(SUM(bytes), 0) AS total_bytes,
            MAX(ts) AS last_used
     FROM jobs
-    GROUP BY chat_id
+    WHERE user_id IS NOT NULL
+    GROUP BY user_id
     ORDER BY cnt DESC
     LIMIT $1
   `,
@@ -354,14 +356,14 @@ async function cmdTop(ctx: any, args: string[]): Promise<boolean> {
   );
 
   const lines = rows.map((r: any, i: number) => {
-    const name = r.name ? escapeHtml(r.name) : String(r.chat_id);
+    const name = r.name || r.username ? escapeHtml(r.name || r.username) : String(r.user_id);
     const ago = Math.round((Date.now() - Number(r.last_used)) / 3600_000);
     return `${i + 1}. ${name} — ${r.cnt} запросов (${fmtBytes(
       Number(r.total_bytes)
     )}, ${ago}ч назад)`;
   });
 
-  const msg = [`<b>🏆 Топ-${limit} чатов</b>`, "", ...lines].join("\n");
+  const msg = [`<b>🏆 Топ-${limit} пользователей</b>`, "", ...lines].join("\n");
 
   await ctx.reply(msg, { parse_mode: "HTML" });
   return true;
@@ -539,6 +541,74 @@ bot.catch((err: any) => {
 
 const fastify = Fastify({ logger: true });
 
+const TG_CHAT_CACHE_TTL = 24 * 3600;
+const TG_AVATAR_CACHE_TTL = 6 * 3600;
+const TG_API_DELAY_MS = 50;
+let tgLastCall = 0;
+
+async function tgRateLimit(): Promise<void> {
+  const now = Date.now();
+  const elapsed = now - tgLastCall;
+  if (elapsed < TG_API_DELAY_MS) {
+    await new Promise((r) => setTimeout(r, TG_API_DELAY_MS - elapsed));
+  }
+  tgLastCall = Date.now();
+}
+
+async function getCachedChat(chatId: number): Promise<{ title?: string; type?: string; username?: string } | null> {
+  const key = `tg:chat:${chatId}`;
+  try {
+    const cached = await connection.get(key);
+    if (cached) return JSON.parse(cached);
+  } catch (e) {
+    console.warn("Redis chat cache read failed:", e);
+  }
+  try {
+    await tgRateLimit();
+    const chat = await bot.api.getChat(chatId);
+    const data = {
+      title: "title" in chat ? chat.title : undefined,
+      type: chat.type,
+      username: "username" in chat ? chat.username : undefined,
+    };
+    await connection.setex(key, TG_CHAT_CACHE_TTL, JSON.stringify(data));
+    return data;
+  } catch (e: any) {
+    if (e?.description?.includes("chat not found")) return null;
+    console.warn(`getChat(${chatId}) failed:`, e?.description || e);
+    return null;
+  }
+}
+
+async function getCachedAvatarPath(userId: number): Promise<string | null> {
+  const key = `tg:avatar:${userId}`;
+  try {
+    const cached = await connection.get(key);
+    if (cached) return cached === "__none__" ? null : cached;
+  } catch (e) {
+    console.warn("Redis avatar cache read failed:", e);
+  }
+  try {
+    await tgRateLimit();
+    const photos = await bot.api.getUserProfilePhotos(userId, { limit: 1 });
+    if (!photos.total_count || !photos.photos[0]?.[0]) {
+      await connection.setex(key, 3600, "__none__");
+      return null;
+    }
+    const fileId = photos.photos[0][0].file_id;
+    await tgRateLimit();
+    const file = await bot.api.getFile(fileId);
+    const path = file.file_path;
+    if (path) {
+      await connection.setex(key, TG_AVATAR_CACHE_TTL, path);
+      return path;
+    }
+  } catch (e: any) {
+    console.warn(`getUserProfilePhotos(${userId}) failed:`, e?.description || e);
+  }
+  return null;
+}
+
 async function startServer() {
   fastify.get("/health", async () => ({ ok: true }));
 
@@ -601,6 +671,29 @@ async function startServer() {
     return { waiting, active, delayed, failed };
   });
 
+  fastify.get("/api/chat/:chatId", async (request: any, reply: any) => {
+    const chatId = Number((request as any).params.chatId);
+    if (!chatId) return reply.status(400).send({ error: "Invalid chatId" });
+    const chat = await getCachedChat(chatId);
+    return chat || { error: "Chat not found" };
+  });
+
+  fastify.get("/api/avatar/:userId", async (request: any, reply: any) => {
+    const userId = Number((request as any).params.userId);
+    if (!userId) return reply.status(400).send({ error: "Invalid userId" });
+    const path = await getCachedAvatarPath(userId);
+    if (!path) return reply.status(404).send({ error: "Avatar not found" });
+    const url = `https://api.telegram.org/file/bot${token}/${path}`;
+    try {
+      const res = await fetch(url);
+      if (!res.ok) return reply.status(502).send({ error: "Telegram fetch failed" });
+      const contentType = res.headers.get("content-type") || "image/jpeg";
+      return reply.type(contentType).send(res.body);
+    } catch (e) {
+      return reply.status(502).send({ error: "Proxy failed" });
+    }
+  });
+
   fastify.get("/api/stats", async (request: any) => {
     return getCached("stats", async () => {
       const now = Date.now();
@@ -640,8 +733,9 @@ async function startServer() {
       );
 
       const topUsersQ = await pool.query(
-        `SELECT chat_id, MAX(first_name) AS name, COUNT(*) AS cnt, COALESCE(SUM(bytes), 0) AS total_bytes
-         FROM jobs GROUP BY chat_id ORDER BY cnt DESC LIMIT 5`
+        `SELECT user_id, MAX(first_name) AS name, MAX(username) AS username, COUNT(*) AS cnt, COALESCE(SUM(bytes), 0) AS total_bytes
+         FROM jobs WHERE user_id IS NOT NULL
+         GROUP BY user_id ORDER BY cnt DESC LIMIT 5`
       );
 
       const r = rows[0];
@@ -676,10 +770,15 @@ async function startServer() {
           avgMs: Math.round(Number(p.avg_ms) || 0),
         })),
         topUsers: topUsersQ.rows.map((u: any) => ({
-          chatId: u.chat_id,
-          name: u.name || String(u.chat_id),
+          userId: u.user_id,
+          name: u.name || u.username || String(u.user_id),
+          username: u.username,
           count: Number(u.cnt),
           bytes: Number(u.total_bytes),
+          profileUrl: u.username
+            ? `https://t.me/${u.username}`
+            : `https://t.me/id${u.user_id}`,
+          avatarUrl: `/api/avatar/${u.user_id}`,
         })),
       };
     });
@@ -783,9 +882,34 @@ async function startServer() {
       [...params, Math.min(Number(limit), 200), Number(offset)]
     );
 
+    const rows = dataQ.rows as any[];
+    const chatIds = [...new Set(rows.map((r) => Number(r.chat_id)).filter(Boolean))];
+    const chatCache: Record<string, { title?: string; type?: string; username?: string }> = {};
+    for (const cid of chatIds) {
+      const chat = await getCachedChat(cid);
+      if (chat) chatCache[String(cid)] = chat;
+    }
+
+    const items = rows.map((r) => {
+      const chatId = Number(r.chat_id);
+      const chat = chatCache[String(chatId)];
+      const chatTitle = chat?.title || (chatId < 0 ? `Чат ${chatId}` : null);
+      const chatType = chat?.type;
+      const chatUrl = chat?.username ? `https://t.me/${chat.username}` : null;
+      const userProfileUrl =
+        r.username ? `https://t.me/${r.username}` : r.user_id ? `https://t.me/id${r.user_id}` : null;
+      return {
+        ...r,
+        chatTitle,
+        chatType,
+        chatUrl,
+        userProfileUrl,
+      };
+    });
+
     return {
       total: Number(countQ.rows[0].total),
-      items: dataQ.rows,
+      items,
     };
   });
 
