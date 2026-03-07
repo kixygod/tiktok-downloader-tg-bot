@@ -72,11 +72,11 @@ echo "🔧 Используется команда: $DOCKER_COMPOSE_CMD"
 $DOCKER_COMPOSE_CMD down 2>/dev/null || true
 
 if [ "$USE_XRAY_FLAG" = "true" ]; then
-    # Собираем и запускаем все сервисы, включая Xray
-    $DOCKER_COMPOSE_CMD up -d --build
+    # Собираем и запускаем все сервисы, включая Xray (профиль xray)
+    $DOCKER_COMPOSE_CMD --profile xray up -d --build
 else
-    # Собираем и запускаем только redis + bot + worker, Xray не трогаем
-    $DOCKER_COMPOSE_CMD up -d --build redis bot worker
+    # Собираем и запускаем только postgres + redis + bot + worker (без Xray)
+    $DOCKER_COMPOSE_CMD up -d --build postgres redis bot worker
 fi
 
 echo "⏳ Ожидаем запуска сервисов..."

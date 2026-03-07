@@ -674,6 +674,29 @@ async function recordStat(payload: any): Promise<void> {
   }
 }
 
+function buildStatPayload(
+  job: Job,
+  started: number,
+  status: string,
+  bytes: number,
+  errorMessage?: string
+) {
+  const data = job.data as any;
+  return {
+    ts: started,
+    url: data.url,
+    status,
+    bytes,
+    duration_ms: Date.now() - started,
+    chat_id: data.chatId,
+    user_id: data.userId ?? null,
+    username: data.username ?? null,
+    first_name: data.firstName ?? null,
+    platform: data.platform ?? null,
+    error_message: errorMessage ?? null,
+  };
+}
+
 const worker = new Worker(
   queueName,
   async (job: Job) => {
@@ -703,14 +726,7 @@ const worker = new Worker(
             ackMessageId
           );
 
-          await recordStat({
-            ts: started,
-            url,
-            status: "success",
-            bytes: 0,
-            duration_ms: Date.now() - started,
-            chat_id: chatId,
-          });
+          await recordStat(buildStatPayload(job, started, "success", 0));
 
           downloadedImages.forEach((img) => {
             try {
@@ -747,14 +763,7 @@ const worker = new Worker(
             ackMessageId,
             `❌ Не могу уложиться в ${SIZE_LIMIT_MB} MB даже после сжатия. Попробуйте другую ссылку.`
           );
-          await recordStat({
-            ts: started,
-            url,
-            status: "too_large",
-            bytes,
-            duration_ms: Date.now() - started,
-            chat_id: chatId,
-          });
+          await recordStat(buildStatPayload(job, started, "too_large", bytes));
           return;
         }
 
@@ -768,14 +777,7 @@ const worker = new Worker(
         });
         await bot.api.deleteMessage(chatId, ackMessageId).catch(() => {});
 
-        await recordStat({
-          ts: started,
-          url,
-          status: "compressed",
-          bytes,
-          duration_ms: Date.now() - started,
-          chat_id: chatId,
-        });
+        await recordStat(buildStatPayload(job, started, "compressed", bytes));
         return;
       }
 
@@ -785,14 +787,7 @@ const worker = new Worker(
       });
       await bot.api.deleteMessage(chatId, ackMessageId).catch(() => {});
 
-      await recordStat({
-        ts: started,
-        url,
-        status: "success",
-        bytes,
-        duration_ms: Date.now() - started,
-        chat_id: chatId,
-      });
+      await recordStat(buildStatPayload(job, started, "success", bytes));
     } catch (e: any) {
       console.error(`Job ${job.id} failed:`, e);
       await bot.api.editMessageText(
@@ -800,14 +795,9 @@ const worker = new Worker(
         ackMessageId,
         `❌ Ошибка: ${e.message || e}`
       );
-      await recordStat({
-        ts: started,
-        url,
-        status: "failed",
-        bytes: 0,
-        duration_ms: Date.now() - started,
-        chat_id: chatId,
-      });
+      await recordStat(
+        buildStatPayload(job, started, "failed", 0, String(e.message || e).slice(0, 500))
+      );
       throw e;
     } finally {
       try {

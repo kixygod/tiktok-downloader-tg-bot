@@ -1,4 +1,23 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: tiktok_bot
+      POSTGRES_USER: bot
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-botpass}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    networks: [app]
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bot -d tiktok_bot"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
+
   redis:
     image: redis:7-alpine
     command: ["redis-server", "--save", "''", "--appendonly", "no"]
@@ -6,6 +25,7 @@ services:
     restart: unless-stopped
 
   xray:
+    profiles: [xray]
     image: superng6/singbox:latest
     container_name: xray-hysteria2
     volumes:
@@ -20,6 +40,7 @@ services:
     command: ["run", "-c", "/etc/sing-box/config.json"]
 
   xray-vless:
+    profiles: [xray]
     image: superng6/singbox:latest
     container_name: xray-vless
     volumes:
@@ -34,6 +55,7 @@ services:
     command: ["run", "-c", "/etc/sing-box/config.json"]
 
   xray-shadowsocks:
+    profiles: [xray]
     image: superng6/singbox:latest
     container_name: xray-shadowsocks
     volumes:
@@ -54,20 +76,19 @@ services:
       BOT_TOKEN: ${BOT_TOKEN}
       REDIS_URL: redis://redis:6379
       QUEUE_NAME: tiktok
-      # Проксируем ВСЁ через Xray (значения берутся из .env и могут быть выключены)
+      DATABASE_URL: postgresql://bot:${POSTGRES_PASSWORD:-botpass}@postgres:5432/tiktok_bot
+      ADMIN_CHAT_ID: ${ADMIN_CHAT_ID:-}
       HTTP_PROXY: ${XRAY_HTTP_PROXY}
       HTTPS_PROXY: ${XRAY_HTTPS_PROXY}
       ALL_PROXY: ${XRAY_ALL_PROXY}
-      NO_PROXY: "127.0.0.1,localhost,redis"
+      NO_PROXY: "127.0.0.1,localhost,redis,postgres"
       DASHBOARD_BASIC_AUTH: ${DASHBOARD_BASIC_AUTH:-admin:admin}
       SIZE_LIMIT_MB: "50"
-    depends_on: [redis]
+    depends_on: [redis, postgres]
     networks: [app]
     restart: unless-stopped
     ports:
       - "53500:3000"
-    volumes:
-      - bot_data:/app/data
     dns:
       - 8.8.8.8
       - 1.1.1.1
@@ -101,5 +122,4 @@ networks:
 
 volumes:
   tmp_data:
-  bot_data:
-
+  pg_data:
