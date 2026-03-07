@@ -3,16 +3,15 @@ import Fastify from "fastify";
 import fastifyBasicAuth from "@fastify/basic-auth";
 import { Queue } from "bullmq";
 import IORedis from "ioredis";
-import { Pool } from "pg";
 import { ProxyAgent, setGlobalDispatcher } from "undici";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-const token = process.env.BOT_TOKEN!;
-const sizeLimitMB = Number(process.env.SIZE_LIMIT_MB ?? "50");
-const adminChatId = process.env.ADMIN_CHAT_ID
-  ? Number(process.env.ADMIN_CHAT_ID)
-  : null;
+import { token, sizeLimitMB, adminChatId, redisUrl, queueName, AVG_TIME_CACHE_TTL_MS, API_CACHE_TTL_MS, TG_CHAT_CACHE_TTL, TG_AVATAR_CACHE_TTL, TG_API_DELAY_MS } from "./config";
+import type { StatsBody } from "./types";
+import { initDB, pool } from "./db";
+import { extractSupportedUrls } from "./urls";
+import { handleAdminCommand, isAdmin } from "./admin";
 
 console.log("🔧 Environment variables:");
 console.log(`  BOT_TOKEN: ${token ? "SET" : "NOT SET"}`);
@@ -36,92 +35,9 @@ if (proxyUrl) {
 }
 
 const bot = new Bot(token);
-
-const redisUrl = process.env.REDIS_URL!;
-const queueName = process.env.QUEUE_NAME || "tiktok";
 const connection = new IORedis(redisUrl, { maxRetriesPerRequest: null });
 const queue = new Queue(queueName, { connection });
 
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
-
-async function initDB() {
-  const MAX_RETRIES = 20;
-  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-    try {
-      await pool.query(`
-        CREATE TABLE IF NOT EXISTS jobs (
-          id            SERIAL PRIMARY KEY,
-          ts            BIGINT NOT NULL,
-          url           TEXT NOT NULL,
-          chat_id       BIGINT NOT NULL,
-          user_id       BIGINT,
-          username      TEXT,
-          first_name    TEXT,
-          platform      TEXT,
-          status        TEXT NOT NULL,
-          bytes         BIGINT NOT NULL DEFAULT 0,
-          duration_ms   INTEGER NOT NULL DEFAULT 0,
-          error_message TEXT,
-          created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_jobs_ts ON jobs (ts);
-        CREATE INDEX IF NOT EXISTS idx_jobs_chat_id ON jobs (chat_id);
-        CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs (status);
-        CREATE INDEX IF NOT EXISTS idx_jobs_platform ON jobs (platform);
-        CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs (created_at);
-        CREATE INDEX IF NOT EXISTS idx_jobs_ts_status ON jobs (ts, status);
-      `);
-      console.log("✅ PostgreSQL tables initialized");
-      return;
-    } catch (err: any) {
-      console.log(
-        `⏳ PostgreSQL not ready (attempt ${attempt}/${MAX_RETRIES}): ${err.message}`
-      );
-      if (attempt === MAX_RETRIES) throw err;
-      await new Promise((r) => setTimeout(r, 3000));
-    }
-  }
-}
-
-const SUPPORTED_URL_PATTERNS: { pattern: RegExp; platform: string }[] = [
-  {
-    pattern: /(https?:\/\/(?:www\.|vm\.|vt\.)?tiktok\.com\/[^\s]+)/gi,
-    platform: "tiktok",
-  },
-  {
-    pattern: /(https?:\/\/(?:www\.)?youtube\.com\/shorts\/[^\s]+)/gi,
-    platform: "youtube",
-  },
-  {
-    pattern: /(https?:\/\/(?:www\.)?vk\.com\/clip-[^\s]+)/gi,
-    platform: "vk",
-  },
-  {
-    pattern: /(https?:\/\/(?:www\.)?instagram\.com\/reel\/[^\s]+)/gi,
-    platform: "instagram",
-  },
-];
-
-function extractSupportedUrls(
-  text: string
-): { url: string; platform: string }[] {
-  const seen = new Set<string>();
-  const result: { url: string; platform: string }[] = [];
-  for (const { pattern, platform } of SUPPORTED_URL_PATTERNS) {
-    const matches = text.matchAll(pattern);
-    for (const m of matches) {
-      const url = m[0].trim();
-      if (!seen.has(url)) {
-        seen.add(url);
-        result.push({ url, platform });
-      }
-    }
-  }
-  return result;
-}
-
-const AVG_TIME_CACHE_TTL_MS = 60_000;
 let avgTimeCache: { value: number; expiresAt: number } | null = null;
 
 async function getAverageProcessingTime(): Promise<number> {
@@ -134,7 +50,7 @@ async function getAverageProcessingTime(): Promise<number> {
       `SELECT AVG(duration_ms) as avg FROM jobs WHERE status = 'success' AND ts > $1 AND duration_ms > 0`,
       [since]
     );
-    const value = Math.round(rows[0]?.avg ?? 0);
+    const value = Math.round(Number(rows[0]?.avg) ?? 0);
     avgTimeCache = { value, expiresAt: Date.now() + AVG_TIME_CACHE_TTL_MS };
     return value;
   } catch {
@@ -142,308 +58,19 @@ async function getAverageProcessingTime(): Promise<number> {
   }
 }
 
-function fmtBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  if (bytes < 1024 * 1024 * 1024)
-    return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-  return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
-}
-
-function fmtDuration(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
-  return `${Math.floor(ms / 60_000)}m ${Math.round((ms % 60_000) / 1000)}s`;
-}
-
-function escapeHtml(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
-
-function isAdmin(chatId: number): boolean {
-  return adminChatId !== null && chatId === adminChatId;
-}
-
-async function handleAdminCommand(ctx: any): Promise<boolean> {
-  const chatId = ctx.chat.id;
-  if (!isAdmin(chatId)) return false;
-
-  const text: string = (ctx.message.text || "").trim();
-  if (!text.startsWith("/")) return false;
-
-  const [cmd, ...args] = text.split(/\s+/);
-
-  switch (cmd) {
-    case "/stats":
-      return await cmdStats(ctx, args);
-    case "/today":
-      return await cmdPeriod(ctx, "today");
-    case "/week":
-      return await cmdPeriod(ctx, "week");
-    case "/month":
-      return await cmdPeriod(ctx, "month");
-    case "/all":
-      return await cmdPeriod(ctx, "all");
-    case "/top":
-      return await cmdTop(ctx, args);
-    case "/errors":
-      return await cmdErrors(ctx, args);
-    case "/live":
-      return await cmdLive(ctx);
-    case "/help":
-      return await cmdHelp(ctx);
-    default:
-      return false;
-  }
-}
-
-async function cmdHelp(ctx: any): Promise<boolean> {
-  const msg = [
-    "<b>📊 Админ-команды</b>",
-    "",
-    "/stats — сводка (24ч / 7д / 30д / всё время)",
-    "/today — детали за сегодня",
-    "/week — детали за неделю",
-    "/month — детали за месяц",
-    "/all — за всё время",
-    "/top [N] — топ пользователей по использованию",
-    "/errors [N] — последние ошибки",
-    "/live — текущая очередь и воркеры",
-    "/help — эта справка",
-  ].join("\n");
-  await ctx.reply(msg, { parse_mode: "HTML" });
-  return true;
-}
-
-async function cmdStats(ctx: any, _args: string[]): Promise<boolean> {
-  const now = Date.now();
-  const { rows } = await pool.query(
-    `
-    SELECT
-      COUNT(*) FILTER (WHERE ts >= $1)                            AS d_total,
-      COUNT(*) FILTER (WHERE ts >= $1 AND status='success')       AS d_ok,
-      COUNT(*) FILTER (WHERE ts >= $1 AND status='failed')        AS d_fail,
-      COUNT(*) FILTER (WHERE ts >= $2)                            AS w_total,
-      COUNT(*) FILTER (WHERE ts >= $3)                            AS m_total,
-      COUNT(*)                                                     AS all_total,
-      COALESCE(SUM(bytes), 0)                                      AS all_bytes,
-      COALESCE(AVG(duration_ms) FILTER (WHERE duration_ms > 0), 0) AS avg_ms,
-      COUNT(DISTINCT chat_id)                                      AS unique_chats,
-      COUNT(DISTINCT user_id) FILTER (WHERE user_id IS NOT NULL)   AS unique_users
-    FROM jobs
-  `,
-    [now - 86400_000, now - 7 * 86400_000, now - 30 * 86400_000]
-  );
-
-  const r = rows[0];
-  const successRate =
-    r.d_total > 0 ? Math.round((r.d_ok / r.d_total) * 100) : 0;
-
-  const msg = [
-    "<b>📊 Статистика бота</b>",
-    "",
-    `<b>За 24ч:</b> ${r.d_total} запросов (✅ ${r.d_ok} / ❌ ${r.d_fail}) — ${successRate}%`,
-    `<b>За 7д:</b>  ${r.w_total}`,
-    `<b>За 30д:</b> ${r.m_total}`,
-    `<b>Всего:</b>  ${r.all_total}`,
-    "",
-    `📦 Трафик: ${fmtBytes(Number(r.all_bytes))}`,
-    `⏱ Среднее время: ${fmtDuration(Math.round(Number(r.avg_ms)))}`,
-    `👥 Уник. чатов: ${r.unique_chats}`,
-    `👤 Уник. юзеров: ${r.unique_users}`,
-  ].join("\n");
-
-  await ctx.reply(msg, { parse_mode: "HTML" });
-  return true;
-}
-
-async function cmdPeriod(ctx: any, period: string): Promise<boolean> {
-  const now = Date.now();
-  let since = 0;
-  let label = "за всё время";
-  switch (period) {
-    case "today":
-      since = now - 86400_000;
-      label = "за 24 часа";
-      break;
-    case "week":
-      since = now - 7 * 86400_000;
-      label = "за 7 дней";
-      break;
-    case "month":
-      since = now - 30 * 86400_000;
-      label = "за 30 дней";
-      break;
-  }
-
-  const { rows } = await pool.query(
-    `
-    SELECT
-      COUNT(*)                                                     AS total,
-      COUNT(*) FILTER (WHERE status = 'success')                   AS ok,
-      COUNT(*) FILTER (WHERE status = 'compressed')                AS compressed,
-      COUNT(*) FILTER (WHERE status = 'too_large')                 AS too_large,
-      COUNT(*) FILTER (WHERE status = 'failed')                    AS failed,
-      COALESCE(SUM(bytes), 0)                                      AS total_bytes,
-      COALESCE(AVG(duration_ms) FILTER (WHERE duration_ms > 0), 0) AS avg_ms,
-      COALESCE(MIN(duration_ms) FILTER (WHERE duration_ms > 0), 0) AS min_ms,
-      COALESCE(MAX(duration_ms) FILTER (WHERE duration_ms > 0), 0) AS max_ms,
-      COUNT(DISTINCT chat_id)                                      AS chats,
-      COUNT(DISTINCT user_id) FILTER (WHERE user_id IS NOT NULL)   AS users
-    FROM jobs
-    WHERE ts >= $1
-  `,
-    [since]
-  );
-
-  const r = rows[0];
-
-  const platformQ = await pool.query(
-    `
-    SELECT platform, COUNT(*) AS cnt
-    FROM jobs WHERE ts >= $1 AND platform IS NOT NULL
-    GROUP BY platform ORDER BY cnt DESC
-  `,
-    [since]
-  );
-
-  const platforms = platformQ.rows
-    .map((p: any) => `  ${p.platform}: ${p.cnt}`)
-    .join("\n");
-
-  const msg = [
-    `<b>📈 Детали ${label}</b>`,
-    "",
-    `Всего: <b>${r.total}</b>`,
-    `  ✅ Успешно: ${r.ok}`,
-    `  🗜 Сжато: ${r.compressed}`,
-    `  📏 Слишком большие: ${r.too_large}`,
-    `  ❌ Ошибки: ${r.failed}`,
-    "",
-    `📦 Трафик: ${fmtBytes(Number(r.total_bytes))}`,
-    `⏱ Время: avg ${fmtDuration(
-      Math.round(Number(r.avg_ms))
-    )} / min ${fmtDuration(Number(r.min_ms))} / max ${fmtDuration(
-      Number(r.max_ms)
-    )}`,
-    `👥 Чатов: ${r.chats} | Юзеров: ${r.users}`,
-    "",
-    `<b>Платформы:</b>`,
-    platforms || "  нет данных",
-  ].join("\n");
-
-  await ctx.reply(msg, { parse_mode: "HTML" });
-  return true;
-}
-
-async function cmdTop(ctx: any, args: string[]): Promise<boolean> {
-  const limit = Math.min(Number(args[0]) || 10, 50);
-  const { rows } = await pool.query(
-    `
-    SELECT user_id, 
-           MAX(first_name) AS name,
-           MAX(username) AS username,
-           COUNT(*) AS cnt,
-           COALESCE(SUM(bytes), 0) AS total_bytes,
-           MAX(ts) AS last_used
-    FROM jobs
-    WHERE user_id IS NOT NULL
-    GROUP BY user_id
-    ORDER BY cnt DESC
-    LIMIT $1
-  `,
-    [limit]
-  );
-
-  const lines = rows.map((r: any, i: number) => {
-    const name = r.name || r.username ? escapeHtml(r.name || r.username) : String(r.user_id);
-    const ago = Math.round((Date.now() - Number(r.last_used)) / 3600_000);
-    return `${i + 1}. ${name} — ${r.cnt} запросов (${fmtBytes(
-      Number(r.total_bytes)
-    )}, ${ago}ч назад)`;
-  });
-
-  const msg = [`<b>🏆 Топ-${limit} пользователей</b>`, "", ...lines].join("\n");
-
-  await ctx.reply(msg, { parse_mode: "HTML" });
-  return true;
-}
-
-async function cmdErrors(ctx: any, args: string[]): Promise<boolean> {
-  const limit = Math.min(Number(args[0]) || 10, 30);
-  const { rows } = await pool.query(
-    `
-    SELECT ts, url, chat_id, first_name, error_message, duration_ms
-    FROM jobs
-    WHERE status = 'failed'
-    ORDER BY ts DESC
-    LIMIT $1
-  `,
-    [limit]
-  );
-
-  if (rows.length === 0) {
-    await ctx.reply("🎉 Ошибок не найдено!");
-    return true;
-  }
-
-  const lines = rows.map((r: any) => {
-    const ago = Math.round((Date.now() - Number(r.ts)) / 60_000);
-    const name = r.first_name ? escapeHtml(r.first_name) : String(r.chat_id);
-    const err = r.error_message
-      ? escapeHtml(r.error_message.slice(0, 80))
-      : "нет деталей";
-    return `• <b>${ago}м назад</b> | ${name}\n  ${err}`;
-  });
-
-  const msg = [`<b>❌ Последние ${rows.length} ошибок</b>`, "", ...lines].join(
-    "\n"
-  );
-
-  await ctx.reply(msg, { parse_mode: "HTML" });
-  return true;
-}
-
-async function cmdLive(ctx: any): Promise<boolean> {
-  const waiting = await queue.getWaitingCount();
-  const active = await queue.getActiveCount();
-  const delayed = await queue.getDelayedCount();
-  const failed = await queue.getFailedCount();
-
-  const last5min = Date.now() - 300_000;
-  const { rows } = await pool.query(
-    `SELECT COUNT(*) AS cnt FROM jobs WHERE ts >= $1`,
-    [last5min]
-  );
-
-  const msg = [
-    "<b>🔴 Live-статус</b>",
-    "",
-    `В очереди: ${waiting}`,
-    `Обрабатывается: ${active}`,
-    `Отложенные: ${delayed}`,
-    `Провалено (в очереди): ${failed}`,
-    "",
-    `За последние 5 мин: ${rows[0].cnt} запросов`,
-  ].join("\n");
-
-  await ctx.reply(msg, { parse_mode: "HTML" });
-  return true;
-}
-
-bot.on("message:text", async (ctx: any) => {
+bot.on("message:text", async (ctx) => {
   const text = (ctx.message.text || ctx.message.caption || "").trim();
 
   if (text === "/start") {
     await ctx.reply(
       isAdmin(ctx.chat.id)
         ? "🟢 Ты админ! Команды: /help"
-        : "👋 Привет! Отправь ссылку на TikTok, YouTube Shorts, VK Clips или Instagram Reels."
+        : "👋 Привет! Отправь ссылку на TikTok, YouTube Shorts, VK Clips или Instagram (Reels/посты)."
     );
     return;
   }
 
-  if (await handleAdminCommand(ctx)) return;
+  if (await handleAdminCommand(ctx, queue)) return;
 
   const extractedList = extractSupportedUrls(text);
   if (extractedList.length === 0) return;
@@ -457,7 +84,7 @@ bot.on("message:text", async (ctx: any) => {
     if (count > RATE_LIMIT) {
       await ctx.reply(
         `⏳ Слишком много запросов. Лимит: ${RATE_LIMIT} в минуту. Подождите немного.`,
-        { reply_to_message_id: ctx.message.message_id, allow_sending_without_reply: true }
+        { reply_parameters: { message_id: ctx.message.message_id, allow_sending_without_reply: true } }
       );
       return;
     }
@@ -465,7 +92,7 @@ bot.on("message:text", async (ctx: any) => {
 
   const jobs = await queue.getJobs(["waiting", "active"]);
   const urlsInQueue = new Set(
-    jobs.map((j: any) => j.data?.url).filter(Boolean)
+    jobs.map((j) => (j.data as { url?: string })?.url).filter(Boolean)
   );
 
   const toAdd = extractedList.filter((e) => !urlsInQueue.has(e.url));
@@ -473,8 +100,7 @@ bot.on("message:text", async (ctx: any) => {
 
   if (toAdd.length === 0) {
     await ctx.reply("⏳ Эта ссылка уже в очереди.", {
-      reply_to_message_id: ctx.message.message_id,
-      allow_sending_without_reply: true,
+      reply_parameters: { message_id: ctx.message.message_id, allow_sending_without_reply: true },
     });
     return;
   }
@@ -494,8 +120,7 @@ bot.on("message:text", async (ctx: any) => {
           : "Обрабатываю ссылку…";
 
     const ack = await ctx.reply(msg, {
-      reply_to_message_id: ctx.message.message_id,
-      allow_sending_without_reply: true,
+      reply_parameters: { message_id: ctx.message.message_id, allow_sending_without_reply: true },
     });
 
     await queue.add(
@@ -523,13 +148,12 @@ bot.on("message:text", async (ctx: any) => {
 
   if (duplicates > 0) {
     await ctx.reply(`ℹ️ ${duplicates} ссылок уже в очереди, добавлено ${toAdd.length}.`, {
-      reply_to_message_id: ctx.message.message_id,
-      allow_sending_without_reply: true,
+      reply_parameters: { message_id: ctx.message.message_id, allow_sending_without_reply: true },
     });
   }
 });
 
-bot.catch((err: any) => {
+bot.catch((err: { error: unknown }) => {
   if (err.error instanceof GrammyError) {
     console.error("Telegram API error:", err.error.description);
   } else if (err.error instanceof HttpError) {
@@ -541,9 +165,6 @@ bot.catch((err: any) => {
 
 const fastify = Fastify({ logger: true });
 
-const TG_CHAT_CACHE_TTL = 24 * 3600;
-const TG_AVATAR_CACHE_TTL = 6 * 3600;
-const TG_API_DELAY_MS = 50;
 let tgLastCall = 0;
 
 async function tgRateLimit(): Promise<void> {
@@ -573,9 +194,10 @@ async function getCachedChat(chatId: number): Promise<{ title?: string; type?: s
     };
     await connection.setex(key, TG_CHAT_CACHE_TTL, JSON.stringify(data));
     return data;
-  } catch (e: any) {
-    if (e?.description?.includes("chat not found")) return null;
-    console.warn(`getChat(${chatId}) failed:`, e?.description || e);
+  } catch (e: unknown) {
+    const err = e as { description?: string };
+    if (err?.description?.includes("chat not found")) return null;
+    console.warn(`getChat(${chatId}) failed:`, err?.description || e);
     return null;
   }
 }
@@ -603,8 +225,9 @@ async function getCachedAvatarPath(userId: number): Promise<string | null> {
       await connection.setex(key, TG_AVATAR_CACHE_TTL, path);
       return path;
     }
-  } catch (e: any) {
-    console.warn(`getUserProfilePhotos(${userId}) failed:`, e?.description || e);
+  } catch (e: unknown) {
+    const err = e as { description?: string };
+    console.warn(`getUserProfilePhotos(${userId}) failed:`, err?.description || e);
   }
   return null;
 }
@@ -612,22 +235,48 @@ async function getCachedAvatarPath(userId: number): Promise<string | null> {
 async function startServer() {
   fastify.get("/health", async () => ({ ok: true }));
 
-  fastify.post("/stats", async (request: any) => {
-    const {
-      ts,
-      url,
-      status,
-      bytes,
-      duration_ms,
-      chat_id,
-      user_id,
-      username,
-      first_name,
-      platform,
-      error_message,
-    } = request.body as any;
+  const statsBodySchema = {
+    type: "object",
+    required: ["ts", "url", "status", "bytes", "duration_ms", "chat_id"],
+    properties: {
+      ts: { type: "integer", minimum: 0 },
+      url: { type: "string", maxLength: 2048 },
+      status: {
+        type: "string",
+        enum: ["success", "failed", "cached", "compressed", "too_large"],
+      },
+      bytes: { type: "integer", minimum: 0 },
+      duration_ms: { type: "integer", minimum: 0 },
+      chat_id: { type: "integer" },
+      user_id: { type: ["integer", "null"] },
+      username: { type: ["string", "null"], maxLength: 256 },
+      first_name: { type: ["string", "null"], maxLength: 256 },
+      platform: { type: ["string", "null"], maxLength: 64 },
+      error_message: { type: ["string", "null"], maxLength: 1000 },
+    },
+    additionalProperties: false,
+  };
 
-    await pool.query(
+  fastify.post(
+    "/stats",
+    { schema: { body: statsBodySchema } },
+    async (request) => {
+      const body = request.body as StatsBody;
+      const {
+        ts,
+        url,
+        status,
+        bytes,
+        duration_ms,
+        chat_id,
+        user_id,
+        username,
+        first_name,
+        platform,
+        error_message,
+      } = body;
+
+      await pool.query(
       `INSERT INTO jobs (ts, url, chat_id, user_id, username, first_name, platform, status, bytes, duration_ms, error_message)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
       [
@@ -645,16 +294,17 @@ async function startServer() {
       ]
     );
 
-    return { ok: true };
-  });
+      return { ok: true };
+    }
+  );
 
   const API_CACHE_TTL_MS = 10_000;
-  const apiCache = new Map<string, { data: any; expiresAt: number }>();
+  const apiCache = new Map<string, { data: unknown; expiresAt: number }>();
 
   function getCached<T>(key: string, fetcher: () => Promise<T>): Promise<T> {
     const cached = apiCache.get(key);
     if (cached && Date.now() < cached.expiresAt)
-      return Promise.resolve(cached.data);
+      return Promise.resolve(cached.data as T);
     return fetcher().then((data) => {
       apiCache.set(key, { data, expiresAt: Date.now() + API_CACHE_TTL_MS });
       return data;

@@ -20,7 +20,9 @@ services:
 
   redis:
     image: redis:7-alpine
-    command: ["redis-server", "--save", "''", "--appendonly", "no"]
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    volumes:
+      - redis_data:/data
     networks: [app]
     restart: unless-stopped
 
@@ -127,3 +129,4 @@ networks:
 volumes:
   tmp_data:
   pg_data:
+  redis_data:

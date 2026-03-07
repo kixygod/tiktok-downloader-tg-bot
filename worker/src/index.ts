@@ -1,5 +1,6 @@
 import { Worker, Job } from "bullmq";
 import IORedis from "ioredis";
+import type { JobData } from "./types";
 import { spawn } from "node:child_process";
 import {
   statSync,
@@ -247,30 +248,77 @@ function run(cmd: string, args: string[]): Promise<void> {
   });
 }
 
+/** Парсит stderr yt-dlp для прогресса [download] 45.2% и вызывает callback (с троттлингом) */
+function runYtDlpWithProgress(
+  args: string[],
+  onProgress?: (percent: number) => void
+): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const p = spawn("yt-dlp", args, { stdio: ["ignore", "pipe", "pipe"] });
+    let stderr = "";
+    let lastReportedPercent = -1;
+    const PROGRESS_THROTTLE_PERCENT = 15;
+    const PROGRESS_THROTTLE_MS = 4000;
+    let lastReportTime = 0;
+    p.stderr.on("data", (d: Buffer) => {
+      const chunk = d.toString();
+      stderr += chunk;
+      if (!onProgress) return;
+      const match = chunk.match(/\[download\]\s+(\d+(?:\.\d+)?)%/);
+      if (match) {
+        const pct = Math.round(parseFloat(match[1]));
+        const now = Date.now();
+        if (pct === 100 || pct - lastReportedPercent >= PROGRESS_THROTTLE_PERCENT || now - lastReportTime > PROGRESS_THROTTLE_MS) {
+          lastReportedPercent = pct;
+          lastReportTime = now;
+          onProgress(pct);
+        }
+      }
+    });
+
+    p.on("close", (code) => {
+      if (code === 0) {
+        if (onProgress && lastReportedPercent < 100) onProgress(100);
+        resolve();
+      } else {
+        reject(new Error(`yt-dlp exit ${code}: ${stderr}`));
+      }
+    });
+  });
+}
+
 async function ytDownload(
   url: string,
-  outPath: string
+  outPath: string,
+  onProgress?: (percent: number) => void
 ): Promise<{ type: "video" | "images"; data: string | string[] }> {
   const proxyNames = ["Shadowsocks", "Hysteria2", "VLESS"];
   let lastError: Error | null = null;
 
+  const baseArgs = [
+    "-f",
+    "best[ext=mp4][vcodec^=avc1]/best[ext=mp4]/best",
+    "--no-warnings",
+    "--restrict-filenames",
+    "--no-playlist",
+    "-o",
+    outPath,
+  ];
+  const argsWithProgress = [...baseArgs, url];
+  const argsNoProgress = ["--no-progress", ...baseArgs, url];
+
+  const runYtDlp = (args: string[]) =>
+    onProgress
+      ? runYtDlpWithProgress(args, onProgress)
+      : run("yt-dlp", args);
+
   if (!XRAY_ENABLED || PROXY_LIST.length === 0) {
     console.log("⚠️ Нет доступных прокси, пробуем yt-dlp без прокси...");
 
-    const args = [
-      "-f",
-      "best[ext=mp4][vcodec^=avc1]/best[ext=mp4]/best",
-      "--no-warnings",
-      "--no-progress",
-      "--restrict-filenames",
-      "--no-playlist",
-      "-o",
-      outPath,
-      url,
-    ];
+    const args = onProgress ? argsWithProgress : argsNoProgress;
 
     try {
-      await run("yt-dlp", args);
+      await runYtDlp(args);
       const detectedPath = resolveDownloadedFile(outPath);
       if (!detectedPath) {
         throw new Error(
@@ -322,22 +370,12 @@ async function ytDownload(
 
     console.log(`Пробуем загрузку через ${proxyName} (${proxy})...`);
 
-    const args = [
-      "-f",
-      "best[ext=mp4][vcodec^=avc1]/best[ext=mp4]/best",
-      "--no-warnings",
-      "--no-progress",
-      "--restrict-filenames",
-      "--no-playlist",
-      "-o",
-      outPath,
-      url,
-      "--proxy",
-      proxy,
-    ];
+    const args = onProgress
+      ? [...baseArgs, url, "--proxy", proxy]
+      : ["--no-progress", ...baseArgs, url, "--proxy", proxy];
 
     try {
-      await run("yt-dlp", args);
+      await runYtDlp(args);
       const detectedPath = resolveDownloadedFile(outPath);
       if (!detectedPath) {
         throw new Error(
@@ -748,7 +786,7 @@ function buildStatPayload(
   bytes: number,
   errorMessage?: string
 ) {
-  const data = job.data as any;
+  const data = job.data as JobData;
   return {
     ts: started,
     url: data.url,
@@ -768,7 +806,7 @@ const worker = new Worker(
   queueName,
   async (job: Job) => {
     const { url, chatId, messageId, ackMessageId, sizeLimitMB } =
-      job.data as any;
+      job.data as JobData;
     const started = Date.now();
     const id = randomUUID();
     const raw = path.join(TMP_DIR, `${id}.mp4`);
@@ -792,7 +830,21 @@ const worker = new Worker(
         return;
       }
 
-      const result = await ytDownload(expandedUrl, raw);
+      const progressCallback = async (percent: number) => {
+        try {
+          await bot.api.editMessageText(
+            chatId,
+            ackMessageId,
+            percent < 100
+              ? `Загрузка… ${percent}%`
+              : `Обработка…`
+          );
+        } catch {
+          /* Игнорируем ошибки редактирования (rate limit и т.п.) */
+        }
+      };
+
+      const result = await ytDownload(expandedUrl, raw, progressCallback);
 
       if (result.type === "images") {
         console.log(`Processing photo post with ${result.data.length} images`);
