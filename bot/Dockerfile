@@ -1,6 +1,6 @@
 FROM node:20-alpine
 
-# Установка зависимостей для сборки
+# python3/make/g++ needed for native addons
 RUN apk add --no-cache python3 make g++
 
 WORKDIR /app
@@ -23,7 +23,6 @@ RUN npm prune --production
 # Создаем пользователя для безопасности
 RUN addgroup -g 1001 -S nodejs \
   && adduser -S nodejs -u 1001 \
-  && mkdir -p /app/data \
   && chown -R nodejs:nodejs /app
 
 USER nodejs
