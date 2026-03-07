@@ -178,12 +178,26 @@ function resolveDownloadedFile(outPath: string): string | null {
   return null;
 }
 
+const EXPAND_URL_CACHE_PREFIX = "expand_url:";
+const EXPAND_URL_CACHE_TTL = 6 * 3600; // 6 часов
+
 async function expandUrl(url: string): Promise<string> {
   if (
     url.includes("vm.tiktok.com") ||
     url.includes("vt.tiktok.com") ||
     url.includes("tiktok.com/t/")
   ) {
+    const cacheKey = EXPAND_URL_CACHE_PREFIX + getCacheKey(url);
+    try {
+      const cached = await connection.get(cacheKey);
+      if (cached) {
+        console.log(`Expand URL cache hit: ${url} -> ${cached}`);
+        return cached;
+      }
+    } catch (e) {
+      console.warn("Redis cache read failed:", e);
+    }
+
     try {
       console.log(`Expanding URL: ${url}`);
       const response = await fetch(url, {
@@ -193,12 +207,17 @@ async function expandUrl(url: string): Promise<string> {
           "User-Agent":
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         },
-        signal: AbortSignal.timeout(10000),
+        signal: AbortSignal.timeout(5000),
       });
 
       if (response.ok) {
         const expandedUrl = response.url;
         console.log(`Expanded to: ${expandedUrl}`);
+        try {
+          await connection.setex(cacheKey, EXPAND_URL_CACHE_TTL, expandedUrl);
+        } catch (e) {
+          console.warn("Redis cache write failed:", e);
+        }
         return expandedUrl;
       }
     } catch (e) {
@@ -672,6 +691,7 @@ async function recompressToTarget(
     `Recompressing: duration=${durMs}ms, target=${targetBytes}B, videoBitrate=${videoBitrate}`
   );
 
+  const ffmpegPreset = process.env.FFMPEG_PRESET || "veryfast";
   const args = [
     "-y",
     "-i",
@@ -679,7 +699,7 @@ async function recompressToTarget(
     "-c:v",
     "libx264",
     "-preset",
-    "veryfast",
+    ffmpegPreset,
     "-b:v",
     String(videoBitrate),
     "-maxrate",
@@ -759,7 +779,7 @@ const worker = new Worker(
           reply_to_message_id: messageId,
         });
         await bot.api.deleteMessage(chatId, ackMessageId).catch(() => {});
-        await recordStat(buildStatPayload(job, started, "success", bytes));
+        await recordStat(buildStatPayload(job, started, "cached", bytes));
         return;
       }
 

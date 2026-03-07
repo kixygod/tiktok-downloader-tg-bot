@@ -547,6 +547,16 @@ async function startServer() {
     });
   }
 
+  fastify.get("/api/queue", async () => {
+    const [waiting, active, delayed, failed] = await Promise.all([
+      queue.getWaitingCount(),
+      queue.getActiveCount(),
+      queue.getDelayedCount(),
+      queue.getFailedCount(),
+    ]);
+    return { waiting, active, delayed, failed };
+  });
+
   fastify.get("/api/stats", async (request: any) => {
     return getCached("stats", async () => {
       const now = Date.now();
@@ -560,6 +570,7 @@ async function startServer() {
         COALESCE(SUM(bytes), 0)           AS all_bytes,
         COALESCE(AVG(duration_ms) FILTER (WHERE duration_ms > 0), 0) AS avg_ms,
         COUNT(*) FILTER (WHERE status = 'success')    AS total_success,
+        COUNT(*) FILTER (WHERE status = 'cached')     AS total_cached,
         COUNT(*) FILTER (WHERE status = 'failed')     AS total_failed,
         COUNT(*) FILTER (WHERE status = 'compressed') AS total_compressed,
         COUNT(*) FILTER (WHERE status = 'too_large')  AS total_too_large,
@@ -568,6 +579,25 @@ async function startServer() {
       FROM jobs
     `,
         [now - 86400_000, now - 7 * 86400_000, now - 30 * 86400_000]
+      );
+
+      const trafficByPlatformQ = await pool.query(
+        `SELECT platform, COALESCE(SUM(bytes), 0) AS total_bytes
+         FROM jobs WHERE ts >= $1 AND platform IS NOT NULL
+         GROUP BY platform ORDER BY total_bytes DESC`,
+        [now - 30 * 86400_000]
+      );
+
+      const avgByPlatformQ = await pool.query(
+        `SELECT platform, AVG(duration_ms) FILTER (WHERE duration_ms > 0) AS avg_ms
+         FROM jobs WHERE ts >= $1 AND platform IS NOT NULL
+         GROUP BY platform`,
+        [now - 30 * 86400_000]
+      );
+
+      const topUsersQ = await pool.query(
+        `SELECT chat_id, MAX(first_name) AS name, COUNT(*) AS cnt, COALESCE(SUM(bytes), 0) AS total_bytes
+         FROM jobs GROUP BY chat_id ORDER BY cnt DESC LIMIT 5`
       );
 
       const r = rows[0];
@@ -585,12 +615,28 @@ async function startServer() {
         traffic: Math.round((Number(r.all_bytes) / 1024 / 1024) * 10) / 10,
         avgDuration: Math.round(Number(r.avg_ms)),
         totalSuccess: Number(r.total_success),
+        totalCached: Number(r.total_cached),
         totalFailed: Number(r.total_failed),
         totalCompressed: Number(r.total_compressed),
         totalTooLarge: Number(r.total_too_large),
         uniqueChats: Number(r.unique_chats),
         uniqueUsers: Number(r.unique_users),
         proxyEnabled,
+        trafficByPlatform: trafficByPlatformQ.rows.map((p: any) => ({
+          platform: p.platform,
+          bytes: Number(p.total_bytes),
+          mb: Math.round((Number(p.total_bytes) / 1024 / 1024) * 10) / 10,
+        })),
+        avgByPlatform: avgByPlatformQ.rows.map((p: any) => ({
+          platform: p.platform,
+          avgMs: Math.round(Number(p.avg_ms) || 0),
+        })),
+        topUsers: topUsersQ.rows.map((u: any) => ({
+          chatId: u.chat_id,
+          name: u.name || String(u.chat_id),
+          count: Number(u.cnt),
+          bytes: Number(u.total_bytes),
+        })),
       };
     });
   });

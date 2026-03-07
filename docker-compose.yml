@@ -102,6 +102,7 @@ services:
       TELEGRAM_BOT_TOKEN: ${BOT_TOKEN}
       SIZE_LIMIT_MB: "50"
       MAX_CONCURRENCY: "2"
+      FFMPEG_PRESET: ${FFMPEG_PRESET:-veryfast}
       # Прокси для ytdlp/ffmpeg/любых http-клиентов (fallback на VLESS)
       HTTP_PROXY: ${XRAY_HTTP_PROXY}
       HTTPS_PROXY: ${XRAY_HTTPS_PROXY}

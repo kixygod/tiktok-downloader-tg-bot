@@ -95,6 +95,13 @@
         font-size: 0.8rem;
         color: var(--muted);
       }
+      .queue-status {
+        font-size: 0.8rem;
+        color: var(--muted);
+        padding: 4px 10px;
+        background: var(--bg3);
+        border-radius: 8px;
+      }
 
       /* KPI row */
       .kpi-row {
@@ -187,6 +194,24 @@
         grid-template-columns: 1fr 1fr;
         gap: 14px;
         margin-bottom: 24px;
+      }
+      .info-cards {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+        gap: 14px;
+        margin-bottom: 24px;
+      }
+      .platform-list {
+        font-size: 0.85rem;
+        line-height: 1.8;
+      }
+      .platform-list .row {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+      }
+      .platform-list .row span:last-child {
+        color: var(--muted);
       }
 
       /* recent table */
@@ -288,6 +313,10 @@
         background: rgba(6, 182, 212, 0.15);
         color: var(--cyan);
       }
+      .badge-cache {
+        background: rgba(167, 139, 250, 0.15);
+        color: #a78bfa;
+      }
 
       .pager {
         display: flex;
@@ -327,10 +356,25 @@
         text-overflow: ellipsis;
         white-space: nowrap;
       }
+      .url-cell a {
+        color: var(--accent2);
+      }
+      .url-cell a:hover {
+        text-decoration: underline;
+      }
+      .error-cell {
+        max-width: 180px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 0.75rem;
+        color: var(--red);
+      }
 
       @media (max-width: 900px) {
         .charts-grid,
-        .smalls {
+        .smalls,
+        .info-cards {
           grid-template-columns: 1fr;
         }
 
@@ -360,6 +404,7 @@
       <header>
         <h1>TikTok Bot Dashboard</h1>
         <div class="header-right">
+          <div class="queue-status" id="queueStatus">очередь: —</div>
           <div class="live-dot"></div>
           <span class="refresh-label" id="lastUpdate">загрузка...</span>
         </div>
@@ -386,6 +431,10 @@
         <div class="kpi">
           <div class="kpi-val kpi-green" id="k-success">—</div>
           <div class="kpi-label">Успешные</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-val" id="k-cached" style="color:#a78bfa">—</div>
+          <div class="kpi-label">Из кэша</div>
         </div>
         <div class="kpi">
           <div class="kpi-val kpi-red" id="k-failed">—</div>
@@ -428,6 +477,28 @@
         </div>
       </div>
 
+      <div class="charts-grid">
+        <div class="chart-card chart-full">
+          <h3>Трафик по дням (30д)</h3>
+          <canvas id="trafficChart"></canvas>
+        </div>
+      </div>
+
+      <div class="info-cards">
+        <div class="chart-card">
+          <h3>Трафик по платформам</h3>
+          <div id="trafficByPlatform" class="platform-list"></div>
+        </div>
+        <div class="chart-card">
+          <h3>Ср. время по платформам</h3>
+          <div id="avgByPlatform" class="platform-list"></div>
+        </div>
+        <div class="chart-card">
+          <h3>Топ пользователей</h3>
+          <div id="topUsers" class="platform-list"></div>
+        </div>
+      </div>
+
       <!-- Recent jobs table -->
       <div class="table-wrap">
         <div class="table-head">
@@ -436,6 +507,7 @@
             <select id="f-status">
               <option value="">Все статусы</option>
               <option value="success">Успех</option>
+              <option value="cached">Кэш</option>
               <option value="compressed">Сжатие</option>
               <option value="too_large">Превышение</option>
               <option value="failed">Ошибка</option>
@@ -459,6 +531,7 @@
               <th>Статус</th>
               <th>Размер</th>
               <th>Время обр.</th>
+              <th>Ошибка</th>
             </tr>
           </thead>
           <tbody id="tbody"></tbody>
@@ -476,7 +549,7 @@
       let page = 0,
         totalRows = 0;
       let chartsInited = false;
-      let dailyC, hourlyC, perfC, platformC, statusC;
+      let dailyC, hourlyC, perfC, platformC, statusC, trafficC;
 
       const chartDefaults = {
         responsive: true,
@@ -533,6 +606,7 @@
       function statusBadge(s) {
         const m = {
           success: ["Успех", "badge-ok"],
+          cached: ["Кэш", "badge-cache"],
           compressed: ["Сжат", "badge-comp"],
           too_large: ["Большой", "badge-large"],
           failed: ["Ошибка", "badge-fail"],
@@ -546,6 +620,16 @@
         );
       }
 
+      async function loadQueue() {
+        try {
+          const r = await fetch("/api/queue");
+          const d = await r.json();
+          document.getElementById("queueStatus").textContent =
+            "очередь: " + d.waiting + " | в работе: " + d.active + (d.failed ? " | ошибок: " + d.failed : "");
+        } catch (e) {
+          console.error(e);
+        }
+      }
       async function loadStats() {
         try {
           const r = await fetch("/api/stats");
@@ -555,6 +639,7 @@
           document.getElementById("k-monthly").textContent = d.monthly;
           document.getElementById("k-total").textContent = d.total;
           document.getElementById("k-success").textContent = d.totalSuccess;
+          document.getElementById("k-cached").textContent = d.totalCached ?? 0;
           document.getElementById("k-failed").textContent = d.totalFailed;
           document.getElementById("k-traffic").textContent =
             d.traffic >= 1024
@@ -565,9 +650,36 @@
           );
           document.getElementById("lastUpdate").textContent =
             "обновлено " + new Date().toLocaleTimeString("ru");
+          if (d.trafficByPlatform && d.trafficByPlatform.length) {
+            document.getElementById("trafficByPlatform").innerHTML = d.trafficByPlatform
+              .map((p) => `<div class="row"><span>${platformLabel(p.platform)}</span><span>${p.mb} MB</span></div>`)
+              .join("");
+          } else {
+            document.getElementById("trafficByPlatform").innerHTML = "<div class='row'><span>—</span></div>";
+          }
+          if (d.avgByPlatform && d.avgByPlatform.length) {
+            document.getElementById("avgByPlatform").innerHTML = d.avgByPlatform
+              .map((p) => `<div class="row"><span>${platformLabel(p.platform)}</span><span>${fmtMs(p.avgMs)}</span></div>`)
+              .join("");
+          } else {
+            document.getElementById("avgByPlatform").innerHTML = "<div class='row'><span>—</span></div>";
+          }
+          if (d.topUsers && d.topUsers.length) {
+            document.getElementById("topUsers").innerHTML = d.topUsers
+              .map((u, i) => `<div class="row"><span>${i + 1}. ${escapeHtml(u.name)}</span><span>${u.count} (${fmtBytes(u.bytes)})</span></div>`)
+              .join("");
+          } else {
+            document.getElementById("topUsers").innerHTML = "<div class='row'><span>—</span></div>";
+          }
         } catch (e) {
           console.error(e);
         }
+      }
+      function escapeHtml(s) {
+        if (!s) return "";
+        const div = document.createElement("div");
+        div.textContent = s;
+        return div.innerHTML;
       }
 
       async function loadCharts() {
@@ -577,10 +689,37 @@
           renderDailyChart(d.daily);
           renderHourlyChart(d.hourly);
           renderPerfChart(d.daily);
+          renderTrafficChart(d.daily);
           renderPlatformChart(d.platforms);
           renderStatusChart(d.statuses);
         } catch (e) {
           console.error(e);
+        }
+      }
+      function renderTrafficChart(data) {
+        const labels = data.map((d) => {
+          const p = d.date.split("-");
+          return p[2] + "." + p[1];
+        });
+        const mbData = data.map((d) => Math.round((Number(d.total_bytes || 0) / 1024 / 1024) * 10) / 10);
+        const cfg = {
+          type: "bar",
+          data: {
+            labels,
+            datasets: [{
+              label: "Трафик (MB)",
+              data: mbData,
+              backgroundColor: "rgba(6,182,212,.6)",
+              borderRadius: 4,
+            }],
+          },
+          options: chartDefaults,
+        };
+        if (trafficC) {
+          trafficC.data = cfg.data;
+          trafficC.update("none");
+        } else {
+          trafficC = new Chart(document.getElementById("trafficChart"), cfg);
         }
       }
 
@@ -757,12 +896,14 @@
         }
         const cmap = {
           success: "#22c55e",
+          cached: "#a78bfa",
           compressed: "#f59e0b",
           too_large: "#06b6d4",
           failed: "#ef4444",
         };
         const nmap = {
           success: "Успех",
+          cached: "Кэш",
           compressed: "Сжат",
           too_large: "Большой",
           failed: "Ошибка",
@@ -817,17 +958,21 @@
           const tbody = document.getElementById("tbody");
           tbody.innerHTML = d.items
             .map(
-              (j) => `<tr>
+              (j) => {
+                const url = j.url || "";
+                const urlDisplay = url ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(url)}</a>` : "—";
+                const err = j.error_message ? escapeHtml(String(j.error_message).slice(0, 80)) : "";
+                return `<tr>
       <td>${fmtTime(j.ts)}</td>
-      <td>${j.first_name || j.username || j.chat_id}</td>
+      <td>${escapeHtml(j.first_name || j.username || j.chat_id || "")}</td>
       <td>${platformLabel(j.platform)}</td>
-      <td class="url-cell" title="${(j.url || "").replace(/"/g, "&quot;")}">${
-                j.url || "—"
-              }</td>
+      <td class="url-cell" title="${escapeHtml(url)}">${urlDisplay}</td>
       <td>${statusBadge(j.status)}</td>
       <td>${fmtBytes(j.bytes)}</td>
       <td>${fmtMs(j.duration_ms)}</td>
-    </tr>`
+      <td class="error-cell" title="${err}">${err || "—"}</td>
+    </tr>`;
+              }
             )
             .join("");
 
@@ -871,9 +1016,11 @@
 
       window.onload = () => {
         loadStats();
+        loadQueue();
         loadCharts();
         loadRecent();
         setInterval(loadStats, 15000);
+        setInterval(loadQueue, 5000);
         setInterval(loadCharts, 30000);
         setInterval(loadRecent, 15000);
       };

@@ -355,6 +355,7 @@ POSTGRES_PASSWORD=botpass
 DASHBOARD_BASIC_AUTH=admin:password
 SIZE_LIMIT_MB=50
 MAX_CONCURRENCY=2
+FFMPEG_PRESET=veryfast  # ultrafast — быстрее, veryfast — баланс скорость/качество
 ```
 
 **Примечание**: Прокси настраивается автоматически через переменные окружения в `docker-compose.yml`:
