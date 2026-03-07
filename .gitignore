@@ -3,8 +3,10 @@
 .env.local
 .env.production
 
-# Xray configuration (contains sensitive VLESS keys)
+# Xray configuration (contains sensitive keys)
 xray/config.json
+xray/config-vless.json
+xray/config-shadowsocks.json
 
 # Docker volumes and data
 bot_data/
