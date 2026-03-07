@@ -371,7 +371,9 @@ async function ytDownload(
   return await tryAlternativeDownload(url, outPath);
 }
 
-const IMAGE_DOWNLOAD_CONCURRENCY = 4;
+const IMAGE_DOWNLOAD_CONCURRENCY = Number(
+  process.env.IMAGE_DOWNLOAD_CONCURRENCY || "8"
+);
 
 async function downloadSingleImage(
   imageUrl: string,
@@ -381,32 +383,39 @@ async function downloadSingleImage(
   const imagePath = path.join(TMP_DIR, `image_${index}.jpg`);
   const proxyNames = ["Shadowsocks", "Hysteria2", "VLESS"];
 
-  if (XRAY_ENABLED && PROXY_LIST.length > 0) {
-    for (let j = 0; j < PROXY_LIST.length; j++) {
-      const proxy = PROXY_LIST[j];
-      const proxyName = proxyNames[j] || `Proxy${j + 1}`;
-      try {
-        const args = ["-L", "--proxy", proxy, "-o", imagePath, imageUrl];
-        await run("curl", args);
-        return imagePath;
-      } catch (e) {
-        if (j === PROXY_LIST.length - 1) {
-          console.log(
-            `Прокси не сработали для изображения ${index + 1}/${total}`
-          );
+  // Сначала пробуем без прокси (быстрее на VPS без блокировок)
+  if (!XRAY_ENABLED || PROXY_LIST.length === 0) {
+    try {
+      const args = ["-L", "-o", imagePath, imageUrl];
+      await run("curl", args);
+      return imagePath;
+    } catch (e) {
+      console.log(`Failed to download image ${index + 1}/${total}: ${e}`);
+      return null;
+    }
+  }
+
+  for (let j = 0; j < PROXY_LIST.length; j++) {
+    const proxy = PROXY_LIST[j];
+    try {
+      const args = ["-L", "--proxy", proxy, "-o", imagePath, imageUrl];
+      await run("curl", args);
+      return imagePath;
+    } catch (e) {
+      if (j === PROXY_LIST.length - 1) {
+        try {
+          const args = ["-L", "-o", imagePath, imageUrl];
+          await run("curl", args);
+          return imagePath;
+        } catch (e2) {
+          console.log(`Failed to download image ${index + 1}/${total}: ${e2}`);
+          return null;
         }
       }
     }
   }
 
-  try {
-    const args = ["-L", "-o", imagePath, imageUrl];
-    await run("curl", args);
-    return imagePath;
-  } catch (e) {
-    console.log(`Failed to download image ${index + 1}/${total}: ${e}`);
-    return null;
-  }
+  return null;
 }
 
 async function downloadImages(imageUrls: string[]): Promise<string[]> {
@@ -791,6 +800,11 @@ const worker = new Worker(
         const downloadedImages = await downloadImages(imageUrls);
 
         if (downloadedImages.length > 0) {
+          const totalBytes = downloadedImages.reduce(
+            (sum, img) => sum + statSync(img).size,
+            0
+          );
+
           await sendImagesInBatches(
             chatId,
             downloadedImages,
@@ -798,7 +812,7 @@ const worker = new Worker(
             ackMessageId
           );
 
-          await recordStat(buildStatPayload(job, started, "success", 0));
+          await recordStat(buildStatPayload(job, started, "success", totalBytes));
 
           downloadedImages.forEach((img) => {
             try {
@@ -907,6 +921,9 @@ worker.on("error", (err) => {
 });
 
 cleanCacheOnStartup();
+const CACHE_CLEANUP_INTERVAL_MS =
+  Number(process.env.CACHE_CLEANUP_INTERVAL_MINUTES || "60") * 60 * 1000;
+setInterval(cleanCacheOnStartup, CACHE_CLEANUP_INTERVAL_MS);
 console.log("🔧 Worker started successfully");
 console.log(`📊 Concurrency: ${process.env.MAX_CONCURRENCY || "2"}`);
 console.log(`📏 Size limit: ${SIZE_LIMIT_MB} MB`);

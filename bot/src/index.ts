@@ -86,27 +86,39 @@ async function initDB() {
 
 const SUPPORTED_URL_PATTERNS: { pattern: RegExp; platform: string }[] = [
   {
-    pattern: /(https?:\/\/(?:www\.|vm\.|vt\.)?tiktok\.com\/[^\s]+)/i,
+    pattern: /(https?:\/\/(?:www\.|vm\.|vt\.)?tiktok\.com\/[^\s]+)/gi,
     platform: "tiktok",
   },
   {
-    pattern: /(https?:\/\/(?:www\.)?youtube\.com\/shorts\/[^\s]+)/i,
+    pattern: /(https?:\/\/(?:www\.)?youtube\.com\/shorts\/[^\s]+)/gi,
     platform: "youtube",
   },
   {
-    pattern: /(https?:\/\/(?:www\.)?vk\.com\/clip-[^\s]+)/i,
+    pattern: /(https?:\/\/(?:www\.)?vk\.com\/clip-[^\s]+)/gi,
     platform: "vk",
+  },
+  {
+    pattern: /(https?:\/\/(?:www\.)?instagram\.com\/reel\/[^\s]+)/gi,
+    platform: "instagram",
   },
 ];
 
-function extractSupportedUrl(
+function extractSupportedUrls(
   text: string
-): { url: string; platform: string } | null {
+): { url: string; platform: string }[] {
+  const seen = new Set<string>();
+  const result: { url: string; platform: string }[] = [];
   for (const { pattern, platform } of SUPPORTED_URL_PATTERNS) {
-    const match = text.match(pattern);
-    if (match?.[0]) return { url: match[0], platform };
+    const matches = text.matchAll(pattern);
+    for (const m of matches) {
+      const url = m[0].trim();
+      if (!seen.has(url)) {
+        seen.add(url);
+        result.push({ url, platform });
+      }
+    }
   }
-  return null;
+  return result;
 }
 
 const AVG_TIME_CACHE_TTL_MS = 60_000;
@@ -424,63 +436,95 @@ bot.on("message:text", async (ctx: any) => {
     await ctx.reply(
       isAdmin(ctx.chat.id)
         ? "🟢 Ты админ! Команды: /help"
-        : "👋 Привет! Отправь ссылку на TikTok, YouTube Shorts или VK Clips."
+        : "👋 Привет! Отправь ссылку на TikTok, YouTube Shorts, VK Clips или Instagram Reels."
     );
     return;
   }
 
   if (await handleAdminCommand(ctx)) return;
 
-  if (text.includes("instagram.com")) {
-    await ctx.reply(
-      "❌ К сожалению, бот не умеет работать с Instagram.\n\nПоддерживаются:\n• TikTok\n• YouTube Shorts\n• VK Clips",
-      {
-        reply_to_message_id: ctx.message.message_id,
-        allow_sending_without_reply: true,
-      }
-    );
+  const extractedList = extractSupportedUrls(text);
+  if (extractedList.length === 0) return;
+
+  const userId = ctx.message.from?.id ?? ctx.chat.id;
+  const RATE_LIMIT = Number(process.env.RATE_LIMIT_PER_MINUTE || "10");
+  if (!isAdmin(ctx.chat.id) && RATE_LIMIT > 0) {
+    const rateKey = `ratelimit:${userId}`;
+    const count = await connection.incr(rateKey);
+    if (count === 1) await connection.pexpire(rateKey, 60_000);
+    if (count > RATE_LIMIT) {
+      await ctx.reply(
+        `⏳ Слишком много запросов. Лимит: ${RATE_LIMIT} в минуту. Подождите немного.`,
+        { reply_to_message_id: ctx.message.message_id, allow_sending_without_reply: true }
+      );
+      return;
+    }
+  }
+
+  const jobs = await queue.getJobs(["waiting", "active"]);
+  const urlsInQueue = new Set(
+    jobs.map((j: any) => j.data?.url).filter(Boolean)
+  );
+
+  const toAdd = extractedList.filter((e) => !urlsInQueue.has(e.url));
+  const duplicates = extractedList.length - toAdd.length;
+
+  if (toAdd.length === 0) {
+    await ctx.reply("⏳ Эта ссылка уже в очереди.", {
+      reply_to_message_id: ctx.message.message_id,
+      allow_sending_without_reply: true,
+    });
     return;
   }
 
-  const extracted = extractSupportedUrl(text);
-  if (!extracted) return;
-
   const avgTime = await getAverageProcessingTime();
   const avgTimeSeconds = Math.round(avgTime / 1000);
-
-  const message =
-    avgTime > 0
-      ? `Обрабатываю ссылку…\nСреднее время ожидания: ${avgTimeSeconds}с 😉`
-      : "Обрабатываю ссылку…";
-
-  const ack = await ctx.reply(message, {
-    reply_to_message_id: ctx.message.message_id,
-    allow_sending_without_reply: true,
-  });
-
   const from = ctx.message.from;
 
-  await queue.add(
-    "download",
-    {
-      chatId: ctx.chat.id,
-      messageId: ctx.message.message_id,
-      ackMessageId: ack.message_id,
-      url: extracted.url,
-      platform: extracted.platform,
-      userId: from?.id ?? null,
-      username: from?.username ?? null,
-      firstName: from?.first_name ?? null,
-      sizeLimitMB,
-    },
-    {
-      removeOnComplete: 500,
-      removeOnFail: 500,
-      attempts: 3,
-      backoff: { type: "exponential", delay: 5000 },
-      jobId: `${ctx.chat.id}:${ctx.message.message_id}`,
-    }
-  );
+  for (let i = 0; i < toAdd.length; i++) {
+    const extracted = toAdd[i];
+    const total = toAdd.length;
+    const msg =
+      total > 1
+        ? `Обрабатываю ссылку ${i + 1}/${total}…`
+        : avgTime > 0
+          ? `Обрабатываю ссылку…\nСреднее время: ${avgTimeSeconds}с 😉`
+          : "Обрабатываю ссылку…";
+
+    const ack = await ctx.reply(msg, {
+      reply_to_message_id: ctx.message.message_id,
+      allow_sending_without_reply: true,
+    });
+
+    await queue.add(
+      "download",
+      {
+        chatId: ctx.chat.id,
+        messageId: ctx.message.message_id,
+        ackMessageId: ack.message_id,
+        url: extracted.url,
+        platform: extracted.platform,
+        userId: from?.id ?? null,
+        username: from?.username ?? null,
+        firstName: from?.first_name ?? null,
+        sizeLimitMB,
+      },
+      {
+        removeOnComplete: 500,
+        removeOnFail: 500,
+        attempts: 3,
+        backoff: { type: "exponential", delay: 5000 },
+        jobId: `${ctx.chat.id}:${ctx.message.message_id}:${i}`,
+      }
+    );
+  }
+
+  if (duplicates > 0) {
+    await ctx.reply(`ℹ️ ${duplicates} ссылок уже в очереди, добавлено ${toAdd.length}.`, {
+      reply_to_message_id: ctx.message.message_id,
+      allow_sending_without_reply: true,
+    });
+  }
 });
 
 bot.catch((err: any) => {

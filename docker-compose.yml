@@ -84,6 +84,7 @@ services:
       NO_PROXY: "127.0.0.1,localhost,redis,postgres"
       DASHBOARD_BASIC_AUTH: ${DASHBOARD_BASIC_AUTH:-admin:admin}
       SIZE_LIMIT_MB: "50"
+      RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-10}
     depends_on: [redis, postgres]
     networks: [app]
     restart: unless-stopped
@@ -103,6 +104,8 @@ services:
       SIZE_LIMIT_MB: "50"
       MAX_CONCURRENCY: "2"
       FFMPEG_PRESET: ${FFMPEG_PRESET:-veryfast}
+      CACHE_CLEANUP_INTERVAL_MINUTES: ${CACHE_CLEANUP_INTERVAL_MINUTES:-60}
+      IMAGE_DOWNLOAD_CONCURRENCY: ${IMAGE_DOWNLOAD_CONCURRENCY:-8}
       # Прокси для ytdlp/ffmpeg/любых http-клиентов (fallback на VLESS)
       HTTP_PROXY: ${XRAY_HTTP_PROXY}
       HTTPS_PROXY: ${XRAY_HTTPS_PROXY}
