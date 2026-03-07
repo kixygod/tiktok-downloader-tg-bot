@@ -22,32 +22,75 @@ if ! grep -q "BOT_TOKEN=" .env || grep -q "BOT_TOKEN=1234567890" .env; then
     exit 1
 fi
 
-# Проверяем настройки VLESS
-if grep -q "VLESS_SERVER_HOST" xray/config.json; then
-    echo "❌ VLESS настройки не заполнены в xray/config.json!"
-    echo "📋 Отредактируйте xray/config.json с вашими VLESS данными"
-    exit 1
+# Подтягиваем переменные из .env
+set -a
+source .env
+set +a
+
+# Определяем, нужно ли поднимать Xray
+XRAY_ENABLED="${USE_XRAY:-true}"
+
+if [ "$XRAY_ENABLED" = "false" ] || [ "$XRAY_ENABLED" = "0" ]; then
+    echo "⚙️ USE_XRAY=$XRAY_ENABLED → Xray будет ОТКЛЮЧЕН, работаем напрямую без прокси"
+
+    # Глушим все переменные прокси, чтобы внутри контейнеров трафик шёл напрямую
+    export XRAY_HTTP_PROXY=
+    export XRAY_HTTPS_PROXY=
+    export XRAY_ALL_PROXY=
+    export YTDLP_PROXY_HYSTERIA2=
+    export YTDLP_PROXY_VLESS=
+    export YTDLP_PROXY_SHADOWSOCKS=
+
+    USE_XRAY_FLAG=false
+else
+    echo "⚙️ USE_XRAY=$XRAY_ENABLED → Xray ВКЛЮЧЕН, трафик пойдёт через прокси"
+    USE_XRAY_FLAG=true
+
+    # Проверяем настройки VLESS только если Xray включён
+    if grep -q "VLESS_SERVER_HOST" xray/config.json; then
+        echo "❌ VLESS настройки не заполнены в xray/config.json!"
+        echo "📋 Отредактируйте xray/config.json с вашими VLESS данными"
+        exit 1
+    fi
 fi
 
 echo "✅ Проверки пройдены, запускаем сервисы..."
 
-# Останавливаем если уже запущены
-docker compose down 2>/dev/null || true
+# Определяем, какая команда docker compose доступна (V1 или V2)
+if command -v docker-compose &> /dev/null; then
+    DOCKER_COMPOSE_CMD="docker-compose"
+elif docker compose version &> /dev/null; then
+    DOCKER_COMPOSE_CMD="docker compose"
+else
+    echo "❌ Docker Compose не найден! Установите docker-compose или обновите Docker до версии с встроенным compose."
+    exit 1
+fi
 
-# Собираем и запускаем
-docker compose up -d --build
+echo "🔧 Используется команда: $DOCKER_COMPOSE_CMD"
+
+# Останавливаем если уже запущены
+$DOCKER_COMPOSE_CMD down 2>/dev/null || true
+
+if [ "$USE_XRAY_FLAG" = "true" ]; then
+    # Собираем и запускаем все сервисы, включая Xray
+    $DOCKER_COMPOSE_CMD up -d --build
+else
+    # Собираем и запускаем только redis + bot + worker, Xray не трогаем
+    $DOCKER_COMPOSE_CMD up -d --build redis bot worker
+fi
 
 echo "⏳ Ожидаем запуска сервисов..."
 sleep 10
 
 # Проверяем статус
 echo "📊 Статус сервисов:"
-docker compose ps
+$DOCKER_COMPOSE_CMD ps
 
 echo ""
 echo "🎉 Бот запущен!"
 echo ""
 echo "📱 Добавьте бота в чат и отправьте ссылку на TikTok"
 echo "📊 Дашборд: http://localhost:3000/dashboard"
-echo "📋 Логи: docker compose logs -f"
-echo "🛑 Остановка: docker compose down"
+echo "📋 Логи: $DOCKER_COMPOSE_CMD logs -f"
+echo "🛑 Остановка: $DOCKER_COMPOSE_CMD down"
+
