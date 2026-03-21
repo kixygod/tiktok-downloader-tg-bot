@@ -7,9 +7,9 @@ import { ProxyAgent, setGlobalDispatcher } from "undici";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { token, sizeLimitMB, adminChatId, redisUrl, queueName, AVG_TIME_CACHE_TTL_MS, API_CACHE_TTL_MS, TG_CHAT_CACHE_TTL, TG_AVATAR_CACHE_TTL, TG_API_DELAY_MS } from "./config";
+import { token, sizeLimitMB, adminChatId, redisUrl, queueName, AVG_TIME_CACHE_TTL_MS, API_CACHE_TTL_MS, TG_CHAT_CACHE_TTL, TG_AVATAR_CACHE_TTL, TG_API_DELAY_MS, JOBS_RETENTION_DAYS, JOBS_PURGE_INTERVAL_HOURS } from "./config";
 import type { StatsBody } from "./types";
-import { initDB, pool } from "./db";
+import { initDB, pool, startJobsRetentionSchedule } from "./db";
 import { extractSupportedUrls } from "./urls";
 import { handleAdminCommand, isAdmin } from "./admin";
 
@@ -214,7 +214,7 @@ async function getCachedAvatarPath(userId: number): Promise<string | null> {
     await tgRateLimit();
     const photos = await bot.api.getUserProfilePhotos(userId, { limit: 1 });
     if (!photos.total_count || !photos.photos[0]?.[0]) {
-      await connection.setex(key, 3600, "__none__");
+      await connection.setex(key, TG_AVATAR_CACHE_TTL, "__none__");
       return null;
     }
     const fileId = photos.photos[0][0].file_id;
@@ -603,6 +603,7 @@ async function startServer() {
 
 async function main() {
   await initDB();
+  startJobsRetentionSchedule(JOBS_RETENTION_DAYS, JOBS_PURGE_INTERVAL_HOURS);
   await startServer();
 
   bot.catch((err) => console.error("❌ Bot error:", err));

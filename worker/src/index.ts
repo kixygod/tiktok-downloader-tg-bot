@@ -180,7 +180,10 @@ function resolveDownloadedFile(outPath: string): string | null {
 }
 
 const EXPAND_URL_CACHE_PREFIX = "expand_url:";
-const EXPAND_URL_CACHE_TTL = 6 * 3600; // 6 часов
+/** TTL кэша expand URL в Redis (сек), по умолчанию 30 мин */
+const EXPAND_URL_CACHE_TTL = Number(
+  process.env.REDIS_EXPAND_URL_TTL_SEC ?? 30 * 60
+);
 
 async function expandUrl(url: string): Promise<string> {
   if (

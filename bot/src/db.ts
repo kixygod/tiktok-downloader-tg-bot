@@ -42,3 +42,46 @@ export async function initDB(): Promise<void> {
     }
   }
 }
+
+/**
+ * Удаляет строки jobs с ts (мс) старше JOBS_RETENTION_DAYS.
+ * После массового DELETE PostgreSQL со временем освободит место (autovacuum).
+ */
+export async function purgeOldJobs(
+  retentionDays: number
+): Promise<number> {
+  if (retentionDays <= 0) return 0;
+  const cutoffMs = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
+  const { rowCount } = await pool.query(
+    "DELETE FROM jobs WHERE ts < $1",
+    [cutoffMs]
+  );
+  return rowCount ?? 0;
+}
+
+export function startJobsRetentionSchedule(
+  retentionDays: number,
+  intervalHours: number
+): void {
+  if (retentionDays <= 0 || intervalHours <= 0) {
+    console.log("⚠️ Retention jobs отключён (JOBS_RETENTION_DAYS или интервал = 0)");
+    return;
+  }
+  const intervalMs = intervalHours * 60 * 60 * 1000;
+  const run = () => {
+    purgeOldJobs(retentionDays)
+      .then((n) => {
+        if (n > 0) {
+          console.log(
+            `🧹 Удалено записей jobs старше ${retentionDays} дн.: ${n}`
+          );
+        }
+      })
+      .catch((e) => console.error("Jobs retention purge failed:", e));
+  };
+  run();
+  setInterval(run, intervalMs);
+  console.log(
+    `📅 Очистка jobs: храним ${retentionDays} дн., каждые ${intervalHours} ч`
+  );
+}

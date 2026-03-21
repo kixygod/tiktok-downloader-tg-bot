@@ -1,6 +1,14 @@
+# Лимит логов контейнеров (иначе json-логи съедают диск на маленьких VPS)
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "2m"
+    max-file: "2"
+
 services:
   postgres:
     image: postgres:16-alpine
+    logging: *default-logging
     environment:
       POSTGRES_DB: tiktok_bot
       POSTGRES_USER: bot
@@ -25,11 +33,13 @@ services:
       - redis_data:/data
     networks: [app]
     restart: unless-stopped
+    logging: *default-logging
 
   xray:
     profiles: [xray]
     image: superng6/singbox:latest
     container_name: xray-hysteria2
+    logging: *default-logging
     volumes:
       - ./xray/config.json:/etc/sing-box/config.json:ro
     ports:
@@ -45,6 +55,7 @@ services:
     profiles: [xray]
     image: superng6/singbox:latest
     container_name: xray-vless
+    logging: *default-logging
     volumes:
       - ./xray/config-vless.json:/etc/sing-box/config.json:ro
     ports:
@@ -60,6 +71,7 @@ services:
     profiles: [xray]
     image: superng6/singbox:latest
     container_name: xray-shadowsocks
+    logging: *default-logging
     volumes:
       - ./xray/config-shadowsocks.json:/etc/sing-box/config.json:ro
     ports:
@@ -87,6 +99,9 @@ services:
       DASHBOARD_BASIC_AUTH: ${DASHBOARD_BASIC_AUTH:-admin:admin}
       SIZE_LIMIT_MB: "50"
       RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-10}
+      REDIS_KEY_TTL_SEC: ${REDIS_KEY_TTL_SEC:-1800}
+      JOBS_RETENTION_DAYS: ${JOBS_RETENTION_DAYS:-10}
+      JOBS_PURGE_INTERVAL_HOURS: ${JOBS_PURGE_INTERVAL_HOURS:-6}
     depends_on: [redis, postgres]
     networks: [app]
     restart: unless-stopped
@@ -95,6 +110,7 @@ services:
     dns:
       - 8.8.8.8
       - 1.1.1.1
+    logging: *default-logging
 
   worker:
     build: ./worker
@@ -117,11 +133,13 @@ services:
       YTDLP_PROXY_HYSTERIA2: ${YTDLP_PROXY_HYSTERIA2}
       YTDLP_PROXY_VLESS: ${YTDLP_PROXY_VLESS}
       YTDLP_PROXY_SHADOWSOCKS: ${YTDLP_PROXY_SHADOWSOCKS}
+      REDIS_EXPAND_URL_TTL_SEC: ${REDIS_EXPAND_URL_TTL_SEC:-1800}
     volumes:
       - tmp_data:/tmp/downloads
     depends_on: [redis]
     networks: [app]
     restart: unless-stopped
+    logging: *default-logging
 
 networks:
   app:
