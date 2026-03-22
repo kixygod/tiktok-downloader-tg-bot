@@ -21,6 +21,22 @@ export const SUPPORTED_URL_PATTERNS: { pattern: RegExp; platform: string }[] = [
     pattern: /(https?:\/\/(?:www\.)?instagram\.com\/p\/[^\s]+)/gi,
     platform: "instagram",
   },
+  {
+    // twitter.com / x.com / mobile — посты и видео (/user/status/, /i/status/)
+    pattern:
+      /(https?:\/\/(?:www\.|mobile\.)?(?:twitter\.com|x\.com)\/(?:[^/\s]+\/)?status\/\d+[^\s]*)/gi,
+    platform: "twitter",
+  },
+  {
+    // веб-шаринг: /i/web/status/123
+    pattern:
+      /(https?:\/\/(?:www\.|mobile\.)?(?:twitter\.com|x\.com)\/i\/web\/status\/\d+[^\s]*)/gi,
+    platform: "twitter",
+  },
+  {
+    pattern: /(https?:\/\/t\.co\/[a-zA-Z0-9]+)/gi,
+    platform: "twitter",
+  },
 ];
 
 export function extractSupportedUrls(text: string): ExtractedUrl[] {

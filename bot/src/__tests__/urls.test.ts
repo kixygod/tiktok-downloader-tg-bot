@@ -45,6 +45,36 @@ describe("extractSupportedUrls", () => {
     expect(result[0].platform).toBe("instagram");
   });
 
+  it("извлекает X/Twitter (x.com …/status/id)", () => {
+    const text = "Ссылка https://x.com/user/status/1234567890123456789";
+    const result = extractSupportedUrls(text);
+    expect(result).toHaveLength(1);
+    expect(result[0].url).toContain("x.com");
+    expect(result[0].platform).toBe("twitter");
+  });
+
+  it("извлекает twitter.com и mobile.twitter.com", () => {
+    const a = extractSupportedUrls("https://twitter.com/foo/status/1");
+    expect(a[0]?.platform).toBe("twitter");
+    const b = extractSupportedUrls("https://mobile.twitter.com/bar/status/99?s=20");
+    expect(b[0]?.platform).toBe("twitter");
+    expect(b[0]?.url).toContain("s=20");
+  });
+
+  it("извлекает короткие t.co", () => {
+    const text = "https://t.co/AbCd12";
+    const result = extractSupportedUrls(text);
+    expect(result).toHaveLength(1);
+    expect(result[0].platform).toBe("twitter");
+  });
+
+  it("извлекает /i/web/status/", () => {
+    const text = "https://twitter.com/i/web/status/1234567890";
+    const result = extractSupportedUrls(text);
+    expect(result).toHaveLength(1);
+    expect(result[0].platform).toBe("twitter");
+  });
+
   it("убирает дубликаты", () => {
     const text = "https://tiktok.com/@u/video/1 https://tiktok.com/@u/video/1";
     const result = extractSupportedUrls(text);

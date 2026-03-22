@@ -226,11 +226,13 @@ const EXPAND_URL_CACHE_TTL = Number(
 );
 
 async function expandUrl(url: string): Promise<string> {
-  if (
+  const needsExpand =
     url.includes("vm.tiktok.com") ||
     url.includes("vt.tiktok.com") ||
-    url.includes("tiktok.com/t/")
-  ) {
+    url.includes("tiktok.com/t/") ||
+    url.includes("://t.co/");
+
+  if (needsExpand) {
     const cacheKey = EXPAND_URL_CACHE_PREFIX + getCacheKey(url);
     try {
       const cached = await connection.get(cacheKey);
@@ -566,10 +568,197 @@ async function sendImagesInBatches(
   await bot.api.deleteMessage(chatId, ackMessageId).catch(() => {});
 }
 
+const TWITTER_UA =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+
+function isTwitterStatusUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    const h = u.hostname.replace(/^www\./, "").toLowerCase();
+    if (
+      h !== "twitter.com" &&
+      h !== "x.com" &&
+      h !== "mobile.twitter.com"
+    ) {
+      return false;
+    }
+    // /user/status/ID и /i/web/status/ID — в pathname всегда есть /status/<digits>
+    return /\/status\/\d{10,}/.test(u.pathname);
+  } catch {
+    return false;
+  }
+}
+
+function extractTwitterStatusId(url: string): string | null {
+  const web = url.match(/\/i\/web\/status\/(\d{10,})/);
+  if (web) return web[1];
+  const st = url.match(/\/status\/(\d{10,})/);
+  if (st) return st[1];
+  return null;
+}
+
+function normalizeTwitterImageUrl(raw: string): string {
+  let u = raw.replace(/&amp;/g, "&").trim();
+  if (!u.includes("pbs.twimg.com/media/")) return u;
+  try {
+    const parsed = new URL(u);
+    if (!parsed.searchParams.has("format")) {
+      parsed.searchParams.set("format", "jpg");
+    }
+    parsed.searchParams.set("name", "orig");
+    return parsed.toString();
+  } catch {
+    return u.replace(/([?&])name=[^&]*/g, "$1name=orig");
+  }
+}
+
+function collectPbsMediaUrlsFromJson(obj: unknown, out: Set<string>): void {
+  if (typeof obj === "string") {
+    const re =
+      /https:\/\/pbs\.twimg\.com\/media\/[A-Za-z0-9_-]+(?:\?[^"'\\\s]*)?/gi;
+    let m: RegExpExecArray | null;
+    const s = obj;
+    while ((m = re.exec(s)) !== null) {
+      out.add(normalizeTwitterImageUrl(m[0]));
+    }
+  } else if (Array.isArray(obj)) {
+    for (const x of obj) collectPbsMediaUrlsFromJson(x, out);
+  } else if (obj !== null && typeof obj === "object") {
+    for (const v of Object.values(obj)) collectPbsMediaUrlsFromJson(v, out);
+  }
+}
+
+/** Фото-твиты: yt-dlp даёт «No video» — тянем URL картинок через oembed / syndication. */
+async function tryTwitterPhotoImageUrls(tweetUrl: string): Promise<string[]> {
+  const canonical = (() => {
+    try {
+      const u = new URL(tweetUrl);
+      u.hash = "";
+      return u.toString();
+    } catch {
+      return tweetUrl;
+    }
+  })();
+
+  const fromHtml = (html: string): string[] => {
+    const found = new Set<string>();
+    const re =
+      /https:\/\/pbs\.twimg\.com\/media\/[A-Za-z0-9_-]+(?:\?[^"'\\\s<>]*)?/gi;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(html)) !== null) {
+      found.add(normalizeTwitterImageUrl(m[0]));
+    }
+    return [...found];
+  };
+
+  const oembedPageUrl = (() => {
+    try {
+      const u = new URL(canonical);
+      const h = u.hostname.replace(/^www\./, "").toLowerCase();
+      if (h === "x.com") u.hostname = "twitter.com";
+      return u.toString();
+    } catch {
+      return canonical;
+    }
+  })();
+
+  try {
+    const oembedUrl = `https://publish.twitter.com/oembed?url=${encodeURIComponent(
+      oembedPageUrl
+    )}&omit_script=true&dnt=true`;
+    const res = await fetch(oembedUrl, {
+      headers: { "User-Agent": TWITTER_UA, Accept: "application/json" },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (res.ok) {
+      const j = (await res.json()) as { html?: string };
+      const imgs = fromHtml(j.html || "");
+      if (imgs.length > 0) {
+        console.log(
+          `🐦 Twitter oembed: найдено ${imgs.length} изображений`
+        );
+        return imgs;
+      }
+    }
+  } catch (e) {
+    console.log(`Twitter oembed failed: ${e}`);
+  }
+
+  const tweetId = extractTwitterStatusId(canonical);
+  if (tweetId) {
+    const syndicationUrls = [
+      `https://cdn.syndication.twimg.com/tweet-result?id=${tweetId}&lang=en`,
+      `https://cdn.syndication.twimg.com/tweet-result?id=${tweetId}&lang=en&token=0`,
+    ];
+    for (const api of syndicationUrls) {
+      try {
+        const res = await fetch(api, {
+          headers: {
+            "User-Agent": TWITTER_UA,
+            Accept: "application/json,text/plain,*/*",
+          },
+          signal: AbortSignal.timeout(15000),
+        });
+        if (!res.ok) continue;
+        const text = await res.text();
+        let data: unknown;
+        try {
+          data = JSON.parse(text);
+        } catch {
+          const imgs = fromHtml(text);
+          if (imgs.length > 0) {
+            console.log(
+              `🐦 Twitter syndication (HTML): ${imgs.length} изображений`
+            );
+            return imgs;
+          }
+          continue;
+        }
+        const found = new Set<string>();
+        collectPbsMediaUrlsFromJson(data, found);
+        if (found.size > 0) {
+          const imgs = [...found];
+          console.log(
+            `🐦 Twitter syndication JSON: ${imgs.length} изображений`
+          );
+          return imgs;
+        }
+      } catch (e) {
+        console.log(`Twitter syndication failed (${api}): ${e}`);
+      }
+    }
+  }
+
+  return [];
+}
+
+function isTikTokPageUrl(url: string): boolean {
+  const u = url.toLowerCase();
+  return (
+    u.includes("tiktok.com") ||
+    u.includes("vm.tiktok.com") ||
+    u.includes("vt.tiktok.com")
+  );
+}
+
 async function tryAlternativeDownload(
   url: string,
   outPath: string
 ): Promise<{ type: "video" | "images"; data: string | string[] }> {
+  if (isTwitterStatusUrl(url)) {
+    const twImages = await tryTwitterPhotoImageUrls(url);
+    if (twImages.length > 0) {
+      return { type: "images", data: twImages };
+    }
+    console.log(
+      "🐦 Twitter: не удалось получить изображения через oembed/syndication"
+    );
+  }
+
+  if (!isTikTokPageUrl(url)) {
+    throw new Error("All download methods failed");
+  }
+
   const services = [
     `https://tikwm.com/api/?url=${encodeURIComponent(url)}`,
     `https://api.tikmate.app/api/lookup?id=${

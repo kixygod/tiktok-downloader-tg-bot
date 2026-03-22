@@ -71,7 +71,7 @@ bot.on("message:text", async (ctx) => {
     await ctx.reply(
       isAdmin(ctx.chat.id)
         ? "🟢 Ты админ! Команды: /help"
-        : "👋 Привет! Отправь ссылку на TikTok, YouTube Shorts, VK Clips или Instagram (Reels/посты)."
+        : "👋 Привет! Отправь ссылку на TikTok, YouTube Shorts, VK Clips, Instagram (Reels/посты) или X/Twitter (пост со статусом)."
     );
     return;
   }

@@ -1,5 +1,5 @@
 /** Платформа источника контента */
-export type Platform = "tiktok" | "youtube" | "vk" | "instagram";
+export type Platform = "tiktok" | "youtube" | "vk" | "instagram" | "twitter";
 
 /** Извлечённая ссылка с платформой */
 export interface ExtractedUrl {
