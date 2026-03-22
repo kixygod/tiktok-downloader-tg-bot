@@ -4,7 +4,7 @@ import fastifyBasicAuth from "@fastify/basic-auth";
 import { Queue } from "bullmq";
 import IORedis from "ioredis";
 import { ProxyAgent, setGlobalDispatcher } from "undici";
-import { readFileSync } from "node:fs";
+import { readFileSync, createReadStream } from "node:fs";
 import { join } from "node:path";
 
 import { token, sizeLimitMB, adminChatId, redisUrl, queueName, AVG_TIME_CACHE_TTL_MS, API_CACHE_TTL_MS, TG_CHAT_CACHE_TTL, TG_AVATAR_CACHE_TTL, TG_API_DELAY_MS, JOBS_RETENTION_DAYS, JOBS_PURGE_INTERVAL_HOURS } from "./config";
@@ -12,6 +12,12 @@ import type { StatsBody } from "./types";
 import { initDB, pool, startJobsRetentionSchedule } from "./db";
 import { extractSupportedUrls } from "./urls";
 import { handleAdminCommand, isAdmin } from "./admin";
+import {
+  probeCacheForUrl,
+  resolveCacheKeyForUrl,
+  getCachedVideoPathForKey,
+  getImageFilePath,
+} from "./cacheFs";
 
 console.log("🔧 Environment variables:");
 console.log(`  BOT_TOKEN: ${token ? "SET" : "NOT SET"}`);
@@ -493,7 +499,10 @@ async function startServer() {
     });
   });
 
-  fastify.get("/api/recent", async (request: any) => {
+  async function buildRecentItems(request: any): Promise<{
+    total: number;
+    items: any[];
+  }> {
     const {
       limit = 50,
       offset = 0,
@@ -561,6 +570,10 @@ async function startServer() {
       total: Number(countQ.rows[0].total),
       items,
     };
+  }
+
+  fastify.get("/api/recent", async (request: any) => {
+    return buildRecentItems(request);
   });
 
   await fastify.register(async function (fastify) {
@@ -590,6 +603,82 @@ async function startServer() {
         reply.status(500).send("Error loading dashboard");
       }
     });
+
+    fastify.get("/api/admin/recent", async (request: any) => {
+      const data = await buildRecentItems(request);
+      const items = await Promise.all(
+        data.items.map(async (item: { url: string }) => {
+          const probe = await probeCacheForUrl(item.url, connection);
+          return {
+            ...item,
+            cachePreview: {
+              available: probe.kind !== null,
+              kind: probe.kind,
+              imageCount: probe.imageCount,
+            },
+          };
+        })
+      );
+      return { ...data, items };
+    });
+
+    fastify.get(
+      "/api/admin/cache/:jobId/video",
+      async (request: any, reply: any) => {
+        const jobId = Number((request as any).params.jobId);
+        if (!Number.isFinite(jobId) || jobId < 1) {
+          return reply.status(400).send({ error: "Invalid job id" });
+        }
+        const { rows } = await pool.query(
+          "SELECT url FROM jobs WHERE id = $1",
+          [jobId]
+        );
+        if (!rows.length) {
+          return reply.status(404).send({ error: "Job not found" });
+        }
+        const url = String((rows[0] as { url: string }).url);
+        const key = await resolveCacheKeyForUrl(url, connection);
+        if (!key) {
+          return reply.status(404).send({ error: "Not in cache" });
+        }
+        const p = getCachedVideoPathForKey(key);
+        if (!p) {
+          return reply.status(404).send({ error: "No video in cache" });
+        }
+        return reply.type("video/mp4").send(createReadStream(p));
+      }
+    );
+
+    fastify.get(
+      "/api/admin/cache/:jobId/image/:index",
+      async (request: any, reply: any) => {
+        const jobId = Number((request as any).params.jobId);
+        const index = Number((request as any).params.index);
+        if (!Number.isFinite(jobId) || jobId < 1) {
+          return reply.status(400).send({ error: "Invalid job id" });
+        }
+        if (!Number.isInteger(index) || index < 0) {
+          return reply.status(400).send({ error: "Invalid index" });
+        }
+        const { rows } = await pool.query(
+          "SELECT url FROM jobs WHERE id = $1",
+          [jobId]
+        );
+        if (!rows.length) {
+          return reply.status(404).send({ error: "Job not found" });
+        }
+        const url = String((rows[0] as { url: string }).url);
+        const key = await resolveCacheKeyForUrl(url, connection);
+        if (!key) {
+          return reply.status(404).send({ error: "Not in cache" });
+        }
+        const p = getImageFilePath(key, index);
+        if (!p) {
+          return reply.status(404).send({ error: "Image not in cache" });
+        }
+        return reply.type("image/jpeg").send(createReadStream(p));
+      }
+    );
   });
 
   fastify.listen({ port: 3000, host: "0.0.0.0" }, (err: any, address: any) => {

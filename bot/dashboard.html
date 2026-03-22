@@ -318,6 +318,165 @@
         color: #a78bfa;
       }
 
+      .cache-miss {
+        color: var(--muted);
+        font-size: 0.8rem;
+      }
+
+      .btn-cache-view {
+        background: rgba(99, 102, 241, 0.12);
+        border: 1px solid rgba(99, 102, 241, 0.35);
+        border-radius: 8px;
+        color: var(--accent2);
+        padding: 4px 10px;
+        font-size: 0.75rem;
+        cursor: pointer;
+      }
+
+      .btn-cache-view:hover {
+        border-color: var(--accent);
+        background: rgba(99, 102, 241, 0.2);
+      }
+
+      .cache-modal-overlay {
+        display: none;
+        position: fixed;
+        inset: 0;
+        z-index: 1000;
+        background: rgba(10, 14, 24, 0.82);
+        backdrop-filter: blur(6px);
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+      }
+
+      .cache-modal-overlay.open {
+        display: flex;
+      }
+
+      .cache-modal {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        max-width: min(920px, 100%);
+        max-height: min(90vh, 900px);
+        width: 100%;
+        display: flex;
+        flex-direction: column;
+        box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
+      }
+
+      .cache-modal-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 14px 18px;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .cache-modal-head h4 {
+        margin: 0;
+        font-size: 0.95rem;
+        font-weight: 600;
+      }
+
+      .cache-modal-close {
+        background: transparent;
+        border: none;
+        color: var(--muted);
+        font-size: 1.5rem;
+        line-height: 1;
+        cursor: pointer;
+        padding: 4px 8px;
+      }
+
+      .cache-modal-close:hover {
+        color: var(--text);
+      }
+
+      .cache-modal-body {
+        padding: 16px;
+        overflow: auto;
+        flex: 1;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 200px;
+      }
+
+      .cache-modal-body video {
+        max-width: 100%;
+        max-height: min(72vh, 720px);
+        border-radius: 10px;
+        background: #000;
+      }
+
+      .cache-carousel {
+        position: relative;
+        width: 100%;
+        max-width: 640px;
+      }
+
+      .cache-carousel img {
+        width: 100%;
+        max-height: min(70vh, 680px);
+        object-fit: contain;
+        border-radius: 10px;
+        background: var(--bg3);
+      }
+
+      .cache-carousel-nav {
+        display: flex;
+        justify-content: center;
+        gap: 10px;
+        margin-top: 12px;
+        flex-wrap: wrap;
+      }
+
+      .cache-carousel-nav button {
+        background: var(--bg3);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        color: var(--text);
+        padding: 6px 14px;
+        cursor: pointer;
+        font-size: 0.8rem;
+      }
+
+      .cache-carousel-nav button:hover:not(:disabled) {
+        border-color: var(--accent);
+      }
+
+      .cache-carousel-nav button:disabled {
+        opacity: 0.35;
+        cursor: default;
+      }
+
+      .cache-carousel-dots {
+        display: flex;
+        justify-content: center;
+        gap: 6px;
+        margin-top: 10px;
+        flex-wrap: wrap;
+      }
+
+      .cache-carousel-dots span {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--border);
+        cursor: pointer;
+      }
+
+      .cache-carousel-dots span.active {
+        background: var(--accent);
+      }
+
+      .cache-modal-loading {
+        color: var(--muted);
+        font-size: 0.9rem;
+      }
+
       .pager {
         display: flex;
         justify-content: center;
@@ -569,6 +728,7 @@
               <th>Статус</th>
               <th>Размер</th>
               <th>Время обр.</th>
+              <th>Кэш</th>
               <th>Ошибка</th>
             </tr>
           </thead>
@@ -578,6 +738,20 @@
           <button id="pg-prev" disabled>← Назад</button>
           <span id="pg-info">—</span>
           <button id="pg-next" disabled>Вперёд →</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="cache-modal-overlay" class="cache-modal-overlay" aria-hidden="true">
+      <div class="cache-modal" role="dialog" aria-labelledby="cache-modal-title">
+        <div class="cache-modal-head">
+          <h4 id="cache-modal-title">Кэш запроса</h4>
+          <button type="button" class="cache-modal-close" id="cache-modal-close" aria-label="Закрыть">
+            ×
+          </button>
+        </div>
+        <div class="cache-modal-body" id="cache-modal-body">
+          <span class="cache-modal-loading">Загрузка…</span>
         </div>
       </div>
     </div>
@@ -996,7 +1170,9 @@
         if (chat_id) params.set("chat_id", chat_id);
 
         try {
-          const r = await fetch("/api/recent?" + params);
+          const r = await fetch("/api/admin/recent?" + params, {
+            credentials: "include",
+          });
           const d = await r.json();
           totalRows = d.total;
           const tbody = document.getElementById("tbody");
@@ -1021,6 +1197,19 @@
                   ? `<a href="${escapeHtml(j.chatUrl)}" target="_blank" rel="noopener">${escapeHtml(chatTitle)}</a>`
                   : escapeHtml(chatTitle);
                 const chatBadge = j.chatType ? `<span class="chat-type-badge">${chatTypeLabel(j.chatType)}</span> ` : "";
+                const cp = j.cachePreview || {};
+                let cacheCell;
+                if (cp.available && cp.kind) {
+                  const lbl =
+                    cp.kind === "video"
+                      ? "Видео"
+                      : cp.imageCount === 1
+                        ? "1 фото"
+                        : `${cp.imageCount} фото`;
+                  cacheCell = `<button type="button" class="btn-cache-view" data-job-id="${j.id}" data-kind="${cp.kind}" data-image-count="${cp.imageCount || 0}">${escapeHtml(lbl)}</button>`;
+                } else {
+                  cacheCell = `<span class="cache-miss" title="Нет в кэше или истёк срок (до ~24 ч)">—</span>`;
+                }
                 return `<tr>
       <td>${fmtTime(j.ts)}</td>
       <td><div class="user-cell">${avatarHtml}${userLink}</div></td>
@@ -1030,6 +1219,7 @@
       <td>${statusBadge(j.status)}</td>
       <td>${fmtBytes(j.bytes)}</td>
       <td>${fmtMs(j.duration_ms)}</td>
+      <td class="cache-cell">${cacheCell}</td>
       <td class="error-cell" title="${err}">${err || "—"}</td>
     </tr>`;
               }
@@ -1074,7 +1264,152 @@
         }, 400);
       };
 
+      let cacheModalBlobUrls = [];
+
+      function revokeCacheModalUrls() {
+        cacheModalBlobUrls.forEach((u) => URL.revokeObjectURL(u));
+        cacheModalBlobUrls = [];
+      }
+
+      function closeCacheModal() {
+        const ov = document.getElementById("cache-modal-overlay");
+        ov.classList.remove("open");
+        ov.setAttribute("aria-hidden", "true");
+        const body = document.getElementById("cache-modal-body");
+        const v = body.querySelector("video");
+        if (v) {
+          v.pause();
+          v.removeAttribute("src");
+        }
+        body.innerHTML =
+          '<span class="cache-modal-loading">Загрузка…</span>';
+        revokeCacheModalUrls();
+      }
+
+      async function openCacheModal(jobId, kind, imageCount) {
+        revokeCacheModalUrls();
+        const overlay = document.getElementById("cache-modal-overlay");
+        const body = document.getElementById("cache-modal-body");
+        overlay.classList.add("open");
+        overlay.setAttribute("aria-hidden", "false");
+        body.innerHTML =
+          '<span class="cache-modal-loading">Загрузка…</span>';
+
+        try {
+          if (kind === "video") {
+            const r = await fetch(`/api/admin/cache/${jobId}/video`, {
+              credentials: "include",
+            });
+            if (!r.ok) {
+              body.innerHTML = `<span class="cache-miss">Не удалось загрузить (HTTP ${r.status})</span>`;
+              return;
+            }
+            const blob = await r.blob();
+            const url = URL.createObjectURL(blob);
+            cacheModalBlobUrls.push(url);
+            body.innerHTML = "";
+            const vid = document.createElement("video");
+            vid.controls = true;
+            vid.playsInline = true;
+            vid.src = url;
+            body.appendChild(vid);
+          } else {
+            const n = Math.max(1, Number(imageCount) || 1);
+            let current = 0;
+            let lastImgUrl = null;
+            const wrap = document.createElement("div");
+            wrap.className = "cache-carousel";
+            const img = document.createElement("img");
+            img.alt = "";
+            const nav = document.createElement("div");
+            nav.className = "cache-carousel-nav";
+            const prev = document.createElement("button");
+            prev.type = "button";
+            prev.textContent = "← Назад";
+            const label = document.createElement("span");
+            label.style.cssText =
+              "align-self:center;color:var(--muted);font-size:0.8rem;padding:0 8px";
+            const next = document.createElement("button");
+            next.type = "button";
+            next.textContent = "Вперёд →";
+            const dots = document.createElement("div");
+            dots.className = "cache-carousel-dots";
+
+            async function showIndex(i) {
+              if (i < 0 || i >= n) return;
+              current = i;
+              const r = await fetch(`/api/admin/cache/${jobId}/image/${i}`, {
+                credentials: "include",
+              });
+              if (!r.ok) {
+                img.removeAttribute("src");
+                img.alt = "Ошибка загрузки";
+                return;
+              }
+              const blob = await r.blob();
+              if (lastImgUrl) {
+                URL.revokeObjectURL(lastImgUrl);
+                const ix = cacheModalBlobUrls.indexOf(lastImgUrl);
+                if (ix >= 0) cacheModalBlobUrls.splice(ix, 1);
+              }
+              lastImgUrl = URL.createObjectURL(blob);
+              cacheModalBlobUrls.push(lastImgUrl);
+              img.src = lastImgUrl;
+              label.textContent = `${i + 1} / ${n}`;
+              prev.disabled = i <= 0;
+              next.disabled = i >= n - 1;
+              dots.querySelectorAll("span").forEach((d, di) => {
+                d.classList.toggle("active", di === i);
+              });
+            }
+
+            prev.onclick = () => showIndex(current - 1);
+            next.onclick = () => showIndex(current + 1);
+            for (let di = 0; di < n; di++) {
+              const dot = document.createElement("span");
+              dot.onclick = () => showIndex(di);
+              if (di === 0) dot.classList.add("active");
+              dots.appendChild(dot);
+            }
+            nav.appendChild(prev);
+            nav.appendChild(label);
+            nav.appendChild(next);
+            wrap.appendChild(img);
+            wrap.appendChild(nav);
+            wrap.appendChild(dots);
+            body.innerHTML = "";
+            body.appendChild(wrap);
+            await showIndex(0);
+          }
+        } catch (e) {
+          console.error(e);
+          document.getElementById("cache-modal-body").innerHTML =
+            '<span class="cache-miss">Ошибка сети</span>';
+        }
+      }
+
       window.onload = () => {
+        document.getElementById("tbody").addEventListener("click", (e) => {
+          const btn = e.target.closest(".btn-cache-view");
+          if (!btn) return;
+          openCacheModal(
+            btn.dataset.jobId,
+            btn.dataset.kind,
+            Number(btn.dataset.imageCount || 0)
+          );
+        });
+        document
+          .getElementById("cache-modal-close")
+          .addEventListener("click", closeCacheModal);
+        document
+          .getElementById("cache-modal-overlay")
+          .addEventListener("click", (e) => {
+            if (e.target.id === "cache-modal-overlay") closeCacheModal();
+          });
+        document.addEventListener("keydown", (e) => {
+          if (e.key === "Escape") closeCacheModal();
+        });
+
         loadStats();
         loadQueue();
         loadCharts();

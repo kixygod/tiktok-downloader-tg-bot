@@ -10,6 +10,7 @@ import {
   readdirSync,
   renameSync,
   copyFileSync,
+  writeFileSync,
 } from "node:fs";
 import path from "node:path";
 import { randomUUID, createHash } from "node:crypto";
@@ -65,6 +66,31 @@ function saveToCache(sourcePath: string, url: string): void {
   }
 }
 
+/** Копии фото для админ-просмотра (TTL как у видео). */
+function saveImagesToCache(imagePaths: string[], expandedUrl: string): void {
+  if (imagePaths.length === 0) return;
+  try {
+    const key = getCacheKey(expandedUrl);
+    const dir = path.join(CACHE_DIR, key);
+    if (existsSync(dir)) {
+      rmSync(dir, { recursive: true, force: true });
+    }
+    mkdirSync(dir, { recursive: true });
+    for (let i = 0; i < imagePaths.length; i++) {
+      copyFileSync(imagePaths[i], path.join(dir, `${i}.jpg`));
+    }
+    writeFileSync(
+      path.join(dir, "manifest.json"),
+      JSON.stringify({ type: "images", count: imagePaths.length })
+    );
+    console.log(
+      `📦 Альбом сохранён в кэш: ${key} (${imagePaths.length} фото)`
+    );
+  } catch (e) {
+    console.warn("Не удалось сохранить альбом в кэш:", e);
+  }
+}
+
 function cleanCacheOnStartup(): void {
   try {
     const files = readdirSync(CACHE_DIR);
@@ -73,16 +99,30 @@ function cleanCacheOnStartup(): void {
     for (const f of files) {
       const fp = path.join(CACHE_DIR, f);
       try {
-        const stat = statSync(fp);
-        if (now - stat.mtimeMs > CACHE_TTL_MS) {
+        const st = statSync(fp);
+        if (st.isDirectory()) {
+          const manPath = path.join(fp, "manifest.json");
+          let mtimeMs = st.mtimeMs;
+          if (existsSync(manPath)) {
+            mtimeMs = statSync(manPath).mtimeMs;
+          }
+          if (now - mtimeMs > CACHE_TTL_MS) {
+            rmSync(fp, { recursive: true, force: true });
+            removed++;
+          }
+        } else if (now - st.mtimeMs > CACHE_TTL_MS) {
           rmSync(fp, { force: true });
           removed++;
         }
-      } catch {}
+      } catch {
+        /* skip */
+      }
     }
     if (removed > 0)
-      console.log(`🧹 Очищено ${removed} устаревших файлов из кэша`);
-  } catch {}
+      console.log(`🧹 Очищено ${removed} устаревших записей из кэша`);
+  } catch {
+    /* skip */
+  }
 }
 
 function parseBoolEnv(name: string, defaultValue: boolean): boolean {
@@ -868,6 +908,8 @@ const worker = new Worker(
           );
 
           await recordStat(buildStatPayload(job, started, "success", totalBytes));
+
+          saveImagesToCache(downloadedImages, expandedUrl);
 
           downloadedImages.forEach((img) => {
             try {

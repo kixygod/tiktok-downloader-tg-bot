@@ -105,6 +105,8 @@ services:
     depends_on: [redis, postgres]
     networks: [app]
     restart: unless-stopped
+    volumes:
+      - tmp_data:/tmp/downloads:ro
     ports:
       - "53500:3000"
     dns:
