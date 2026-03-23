@@ -18,6 +18,7 @@ import {
   getCachedVideoPathForKey,
   getImageFilePath,
 } from "./cacheFs";
+import { rehydrateCacheMappingForJobUrl } from "./cacheRehydrate";
 
 console.log("🔧 Environment variables:");
 console.log(`  BOT_TOKEN: ${token ? "SET" : "NOT SET"}`);
@@ -646,6 +647,29 @@ async function startServer() {
           return reply.status(404).send({ error: "No video in cache" });
         }
         return reply.type("video/mp4").send(createReadStream(p));
+      }
+    );
+
+    fastify.post(
+      "/api/admin/cache/rehydrate/:jobId",
+      async (request: any, reply: any) => {
+        const jobId = Number((request as any).params.jobId);
+        if (!Number.isFinite(jobId) || jobId < 1) {
+          return reply.status(400).send({ error: "Invalid job id" });
+        }
+        const { rows } = await pool.query(
+          "SELECT url FROM jobs WHERE id = $1",
+          [jobId]
+        );
+        if (!rows.length) {
+          return reply.status(404).send({ error: "Job not found" });
+        }
+        const url = String((rows[0] as { url: string }).url);
+        const result = await rehydrateCacheMappingForJobUrl(url, connection);
+        if (!result.ok) {
+          return reply.status(404).send(result);
+        }
+        return reply.send(result);
       }
     );
 

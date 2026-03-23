@@ -338,6 +338,34 @@
         background: rgba(99, 102, 241, 0.2);
       }
 
+      .cache-miss-wrap {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        flex-wrap: wrap;
+      }
+
+      .btn-cache-rehydrate {
+        background: var(--bg3);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        color: var(--muted);
+        padding: 2px 7px;
+        font-size: 0.8rem;
+        cursor: pointer;
+        line-height: 1.2;
+      }
+
+      .btn-cache-rehydrate:hover {
+        border-color: var(--accent);
+        color: var(--accent2);
+      }
+
+      .btn-cache-rehydrate:disabled {
+        opacity: 0.45;
+        cursor: wait;
+      }
+
       .cache-modal-overlay {
         display: none;
         position: fixed;
@@ -1209,7 +1237,7 @@
                         : `${cp.imageCount} фото`;
                   cacheCell = `<button type="button" class="btn-cache-view" data-job-id="${j.id}" data-kind="${cp.kind}" data-image-count="${cp.imageCount || 0}">${escapeHtml(lbl)}</button>`;
                 } else {
-                  cacheCell = `<span class="cache-miss" title="Нет в кэше или истёк срок (до ~24 ч)">—</span>`;
+                  cacheCell = `<span class="cache-miss-wrap"><span class="cache-miss" title="Нет в кэше или истёк срок (до ~24 ч)">—</span><button type="button" class="btn-cache-rehydrate" title="Восстановить связь с кэшем на диске (обновить Redis)" data-job-id="${j.id}" aria-label="Восстановить кэш">↻</button></span>`;
                 }
                 return `<tr>
       <td>${fmtTime(j.ts)}</td>
@@ -1390,7 +1418,34 @@
       }
 
       window.onload = () => {
-        document.getElementById("tbody").addEventListener("click", (e) => {
+        document.getElementById("tbody").addEventListener("click", async (e) => {
+          const reh = e.target.closest(".btn-cache-rehydrate");
+          if (reh) {
+            e.preventDefault();
+            const jobId = reh.dataset.jobId;
+            reh.disabled = true;
+            try {
+              const r = await fetch(`/api/admin/cache/rehydrate/${jobId}`, {
+                method: "POST",
+                credentials: "include",
+              });
+              const data = await r.json().catch(() => ({}));
+              if (!r.ok) {
+                alert(
+                  data.message ||
+                    data.error ||
+                    "Не удалось восстановить кэш"
+                );
+              }
+              loadRecent();
+            } catch (err) {
+              console.error(err);
+              alert("Ошибка сети");
+            } finally {
+              reh.disabled = false;
+            }
+            return;
+          }
           const btn = e.target.closest(".btn-cache-view");
           if (!btn) return;
           openCacheModal(

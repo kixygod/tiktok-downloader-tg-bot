@@ -6,7 +6,9 @@ import type IORedis from "ioredis";
 const TMP_DOWNLOADS = process.env.CACHE_DOWNLOADS_ROOT || "/tmp/downloads";
 export const CACHE_DIR = path.join(TMP_DOWNLOADS, "cache");
 const CACHE_TTL_MS = 24 * 3600 * 1000;
-const EXPAND_PREFIX = "expand_url:";
+/** Секунды — как у воркера `rememberCacheUrlMapping` */
+export const CACHE_REDIS_MAP_TTL_SEC = Math.ceil(CACHE_TTL_MS / 1000);
+export const EXPAND_PREFIX = "expand_url:";
 
 export function getCacheKey(url: string): string {
   return createHash("sha256").update(url).digest("hex").slice(0, 32);
@@ -65,7 +67,7 @@ export async function resolveCacheKeyForUrl(
   if (redis) {
     try {
       const expanded = await redis.get(EXPAND_PREFIX + getCacheKey(normalized));
-      if (expanded && expanded !== url) {
+      if (expanded && expanded !== normalized) {
         keysToTry.push(getCacheKey(expanded));
       }
     } catch {
