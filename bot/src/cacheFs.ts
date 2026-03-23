@@ -60,10 +60,11 @@ export async function resolveCacheKeyForUrl(
   url: string,
   redis: IORedis | null
 ): Promise<string | null> {
-  const keysToTry: string[] = [getCacheKey(url)];
+  const normalized = url.trim();
+  const keysToTry: string[] = [getCacheKey(normalized)];
   if (redis) {
     try {
-      const expanded = await redis.get(EXPAND_PREFIX + getCacheKey(url));
+      const expanded = await redis.get(EXPAND_PREFIX + getCacheKey(normalized));
       if (expanded && expanded !== url) {
         keysToTry.push(getCacheKey(expanded));
       }

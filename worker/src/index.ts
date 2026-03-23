@@ -29,6 +29,8 @@ const MAX_BYTES = SIZE_LIMIT_MB * 1024 * 1024;
 const TMP_DIR = "/tmp/downloads";
 const CACHE_DIR = path.join(TMP_DIR, "cache");
 const CACHE_TTL_MS = 24 * 3600 * 1000;
+/** Redis: оригинальная ссылка из джобы → URL, по которому лежит кэш (как долго живут .mp4 в cache/) */
+const CACHE_REDIS_URL_MAP_TTL_SEC = Math.ceil(CACHE_TTL_MS / 1000);
 
 try {
   mkdirSync(TMP_DIR, { recursive: true });
@@ -220,10 +222,25 @@ function resolveDownloadedFile(outPath: string): string | null {
 }
 
 const EXPAND_URL_CACHE_PREFIX = "expand_url:";
-/** TTL кэша expand URL в Redis (сек), по умолчанию 30 мин */
+/** TTL expand/mapping в Redis (сек); по умолчанию = срок файлового кэша (иначе админка «теряет» ключ после 30 мин) */
 const EXPAND_URL_CACHE_TTL = Number(
-  process.env.REDIS_EXPAND_URL_TTL_SEC ?? 30 * 60
+  process.env.REDIS_EXPAND_URL_TTL_SEC ?? CACHE_REDIS_URL_MAP_TTL_SEC
 );
+
+async function rememberCacheUrlMapping(
+  originalUrl: string,
+  canonicalUrl: string
+): Promise<void> {
+  try {
+    await connection.setex(
+      EXPAND_URL_CACHE_PREFIX + getCacheKey(originalUrl),
+      CACHE_REDIS_URL_MAP_TTL_SEC,
+      canonicalUrl
+    );
+  } catch (e) {
+    console.warn("Redis: не удалось сохранить соответствие URL для кэша:", e);
+  }
+}
 
 async function expandUrl(url: string): Promise<string> {
   const needsExpand =
@@ -1048,6 +1065,7 @@ const worker = new Worker(
 
     try {
       const expandedUrl = await expandUrl(url);
+      await rememberCacheUrlMapping(url, expandedUrl);
 
       const cachedPath = getCachedVideoPath(expandedUrl);
       if (cachedPath) {

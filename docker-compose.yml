@@ -135,7 +135,8 @@ services:
       YTDLP_PROXY_HYSTERIA2: ${YTDLP_PROXY_HYSTERIA2}
       YTDLP_PROXY_VLESS: ${YTDLP_PROXY_VLESS}
       YTDLP_PROXY_SHADOWSOCKS: ${YTDLP_PROXY_SHADOWSOCKS}
-      REDIS_EXPAND_URL_TTL_SEC: ${REDIS_EXPAND_URL_TTL_SEC:-1800}
+      # Срок соответствия короткая ссылка → канонический URL (должен быть ≥ срока файлового кэша)
+      REDIS_EXPAND_URL_TTL_SEC: ${REDIS_EXPAND_URL_TTL_SEC:-86400}
     volumes:
       - tmp_data:/tmp/downloads
     depends_on: [redis]
