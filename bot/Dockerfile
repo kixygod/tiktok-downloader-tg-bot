@@ -13,6 +13,7 @@ RUN npm install
 COPY src ./src
 COPY tsconfig.json ./
 COPY dashboard.html ./
+COPY assets ./assets
 
 # Компилируем TypeScript
 RUN npm run build

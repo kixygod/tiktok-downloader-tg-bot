@@ -346,6 +346,28 @@ async function startServer() {
       .send(createReadStream(chartPath));
   });
 
+  fastify.get("/assets/dashboard.css", async (_req, reply) => {
+    const p = join(__dirname, "..", "assets", "dashboard.css");
+    if (!existsSync(p)) {
+      return reply.status(404).send("Not found");
+    }
+    return reply
+      .header("Cache-Control", "public, max-age=86400")
+      .type("text/css; charset=utf-8")
+      .send(createReadStream(p));
+  });
+
+  fastify.get("/assets/dashboard.js", async (_req, reply) => {
+    const p = join(__dirname, "..", "assets", "dashboard.js");
+    if (!existsSync(p)) {
+      return reply.status(404).send("Not found");
+    }
+    return reply
+      .header("Cache-Control", "public, max-age=86400")
+      .type("application/javascript; charset=utf-8")
+      .send(createReadStream(p));
+  });
+
   const statsBodySchema = {
     type: "object",
     required: ["ts", "url", "status", "bytes", "duration_ms", "chat_id"],
