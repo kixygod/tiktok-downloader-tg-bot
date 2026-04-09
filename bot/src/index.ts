@@ -7,10 +7,26 @@ import { ProxyAgent, setGlobalDispatcher } from "undici";
 import { readFileSync, createReadStream, existsSync } from "node:fs";
 import { join } from "node:path";
 
-/** 1×1 прозрачный GIF — отдаём вместо 404 по аватаркам, без спама в консоли. */
+/** 1×1 прозрачный GIF — favicon и прочие места, где нужен «пустой» пиксель. */
 const AVATAR_PLACEHOLDER_GIF = Buffer.from(
   "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7",
   "base64",
+);
+
+/** Видимая заглушка для `/api/avatar` (прозрачный GIF ломал UX: img грузился «успешно», onerror не вызывался). */
+const AVATAR_PLACEHOLDER_SVG = Buffer.from(
+  `<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" aria-hidden="true">
+  <defs>
+    <linearGradient id="avph" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#232d45"/>
+      <stop offset="100%" stop-color="#1a2035"/>
+    </linearGradient>
+  </defs>
+  <circle cx="32" cy="32" r="32" fill="url(#avph)"/>
+  <circle cx="32" cy="24" r="9" fill="#64748b" opacity="0.95"/>
+  <ellipse cx="32" cy="47" rx="14" ry="11" fill="#64748b" opacity="0.9"/>
+</svg>`,
+  "utf-8",
 );
 
 function resolveChartBundlePath(): string | null {
@@ -296,24 +312,49 @@ async function getCachedAvatarPath(userId: number): Promise<string | null> {
   }
   try {
     await tgRateLimit();
-    const photos = await bot.api.getUserProfilePhotos(userId, { limit: 1 });
-    if (!photos.total_count || !photos.photos[0]?.[0]) {
+    /** До 10 снимков: при сбое file_path у одного пробуем следующий (редко, но бывает). */
+    const photos = await bot.api.getUserProfilePhotos(userId, { limit: 10 });
+    if (!photos.total_count || !photos.photos?.length) {
       await connection.setex(key, TG_AVATAR_CACHE_TTL, "__none__");
       return null;
     }
-    const fileId = photos.photos[0][0].file_id;
-    await tgRateLimit();
-    const file = await bot.api.getFile(fileId);
-    const path = file.file_path;
-    if (path) {
-      await connection.setex(key, TG_AVATAR_CACHE_TTL, path);
-      return path;
+    for (const variantRow of photos.photos) {
+      if (!variantRow?.length) continue;
+      const largest = variantRow[variantRow.length - 1];
+      const fileId = largest.file_id;
+      await tgRateLimit();
+      const file = await bot.api.getFile(fileId);
+      const path = file.file_path;
+      if (path) {
+        await connection.setex(key, TG_AVATAR_CACHE_TTL, path);
+        return path;
+      }
     }
+    await connection.setex(key, TG_AVATAR_CACHE_TTL, "__none__");
+    return null;
   } catch (e: unknown) {
-    const err = e as { description?: string };
+    const g = e instanceof GrammyError ? e : null;
+    const desc = g?.description ?? String(e);
+    if (
+      g?.error_code === 400 ||
+      /PEER_ID_INVALID|user not found|USER_NOT_FOUND|user_id_invalid/i.test(
+        desc,
+      )
+    ) {
+      try {
+        await connection.setex(
+          key,
+          Math.min(TG_AVATAR_CACHE_TTL, 3600),
+          "__none__",
+        );
+      } catch {
+        /* ignore */
+      }
+      return null;
+    }
     console.warn(
       `getUserProfilePhotos(${userId}) failed:`,
-      err?.description || e,
+      g?.description || e,
     );
   }
   return null;
@@ -561,23 +602,28 @@ async function startServer() {
     secured.get("/api/avatar/:userId", async (request: any, reply: any) => {
       const userId = Number((request as any).params.userId);
       if (!userId) return reply.status(400).send({ error: "Invalid userId" });
+      const avatarKey = `tg:avatar:${userId}`;
       const sendPlaceholder = () =>
         reply
-          .header("Cache-Control", "public, max-age=3600")
-          .type("image/gif")
-          .send(AVATAR_PLACEHOLDER_GIF);
+          .header("Cache-Control", "public, max-age=86400")
+          .type("image/svg+xml; charset=utf-8")
+          .send(AVATAR_PLACEHOLDER_SVG);
       const path = await getCachedAvatarPath(userId);
       if (!path) return sendPlaceholder();
       const url = `https://api.telegram.org/file/bot${token}/${path}`;
       try {
         const res = await fetch(url);
-        if (!res.ok) return sendPlaceholder();
+        if (!res.ok) {
+          await connection.del(avatarKey).catch(() => {});
+          return sendPlaceholder();
+        }
         const contentType = res.headers.get("content-type") || "image/jpeg";
         return reply
           .header("Cache-Control", "public, max-age=300")
           .type(contentType)
           .send(res.body);
       } catch {
+        await connection.del(avatarKey).catch(() => {});
         return sendPlaceholder();
       }
     });

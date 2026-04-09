@@ -184,6 +184,15 @@ function chatTypeLabel(t) {
   return t ? escapeHtml(String(t)) : "";
 }
 
+/** Буква для заглушки аватара (имя / username). */
+function userAvatarInitial(name) {
+  const s = String(name ?? "").trim();
+  if (!s) return "?";
+  const cp = s.codePointAt(0);
+  if (cp === undefined) return "?";
+  return String.fromCodePoint(cp).toLocaleUpperCase("ru");
+}
+
 async function loadQueue() {
   if (docHidden() || loadQueueBusy) return;
   loadQueueBusy = true;
@@ -265,7 +274,8 @@ async function loadStats() {
           const link = u.profileUrl
             ? `<a href="${escapeHtml(u.profileUrl)}" target="_blank" rel="noopener">${escapeHtml(u.name)}</a>`
             : escapeHtml(u.name);
-          const avatar = `<img class="user-avatar" src="${escapeHtml(u.avatarUrl)}" alt="" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';" /><span class="user-avatar-placeholder" style="display:none">?</span>`;
+          const avInit = escapeHtml(userAvatarInitial(u.name));
+          const avatar = `<img class="user-avatar" src="${escapeHtml(u.avatarUrl)}" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.classList.add('user-avatar-placeholder--visible');" /><span class="user-avatar-placeholder" aria-hidden="true">${avInit}</span>`;
           return `<div class="row user-row"><span><span class="user-cell">${avatar}${link}</span></span><span>${u.count} (${fmtBytes(u.bytes)})</span></div>`;
         })
         .join("");
@@ -613,9 +623,10 @@ async function loadRecent() {
         const userLink = j.userProfileUrl
           ? `<a href="${escapeHtml(j.userProfileUrl)}" target="_blank" rel="noopener" class="user-name">${escapeHtml(userName)}</a>`
           : `<span class="user-name">${escapeHtml(userName)}</span>`;
+        const avInit = escapeHtml(userAvatarInitial(userName));
         const avatarHtml = j.user_id
-          ? `<img class="user-avatar" src="/api/avatar/${j.user_id}" alt="" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';" /><span class="user-avatar-placeholder" style="display:none">?</span>`
-          : `<span class="user-avatar-placeholder">—</span>`;
+          ? `<img class="user-avatar" src="/api/avatar/${j.user_id}" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.classList.add('user-avatar-placeholder--visible');" /><span class="user-avatar-placeholder" aria-hidden="true">${avInit}</span>`
+          : `<span class="user-avatar-placeholder user-avatar-placeholder--visible user-avatar-placeholder--empty">${avInit}</span>`;
         const chatTitle =
           j.chatTitle || (j.chat_id ? "Chat " + j.chat_id : "—");
         const chatLink = j.chatUrl
