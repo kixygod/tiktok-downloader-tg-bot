@@ -17,6 +17,9 @@ COPY dashboard.html ./
 # Компилируем TypeScript
 RUN npm run build
 
+# Самохостинг Chart.js (HTTP + публичный IP: CDN режут Private Network Access в Chrome)
+RUN mkdir -p vendor && cp node_modules/chart.js/dist/chart.umd.js vendor/chart.umd.js
+
 # Оставляем только прод зависимости
 RUN npm prune --production
 

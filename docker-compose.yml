@@ -28,7 +28,8 @@ services:
 
   redis:
     image: redis:7-alpine
-    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    command:
+      ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
     volumes:
       - redis_data:/data
     networks: [app]
@@ -97,6 +98,7 @@ services:
       ALL_PROXY: ${XRAY_ALL_PROXY}
       NO_PROXY: "127.0.0.1,localhost,redis,postgres"
       DASHBOARD_BASIC_AUTH: ${DASHBOARD_BASIC_AUTH:-admin:admin}
+      STATS_INTERNAL_TOKEN: ${STATS_INTERNAL_TOKEN:-}
       SIZE_LIMIT_MB: "50"
       RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-10}
       REDIS_KEY_TTL_SEC: ${REDIS_KEY_TTL_SEC:-1800}
@@ -121,6 +123,7 @@ services:
       REDIS_URL: redis://redis:6379
       QUEUE_NAME: tiktok
       TELEGRAM_BOT_TOKEN: ${BOT_TOKEN}
+      STATS_INTERNAL_TOKEN: ${STATS_INTERNAL_TOKEN:-}
       SIZE_LIMIT_MB: "50"
       MAX_CONCURRENCY: "2"
       FFMPEG_PRESET: ${FFMPEG_PRESET:-veryfast}

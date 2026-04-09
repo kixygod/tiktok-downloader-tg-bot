@@ -1,13 +1,49 @@
 import { Bot, GrammyError, HttpError } from "grammy";
-import Fastify from "fastify";
+import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import fastifyBasicAuth from "@fastify/basic-auth";
 import { Queue } from "bullmq";
 import IORedis from "ioredis";
 import { ProxyAgent, setGlobalDispatcher } from "undici";
-import { readFileSync, createReadStream } from "node:fs";
+import { readFileSync, createReadStream, existsSync } from "node:fs";
 import { join } from "node:path";
 
-import { token, sizeLimitMB, adminChatId, redisUrl, queueName, AVG_TIME_CACHE_TTL_MS, API_CACHE_TTL_MS, TG_CHAT_CACHE_TTL, TG_AVATAR_CACHE_TTL, TG_API_DELAY_MS, JOBS_RETENTION_DAYS, JOBS_PURGE_INTERVAL_HOURS } from "./config";
+/** 1×1 прозрачный GIF — отдаём вместо 404 по аватаркам, без спама в консоли. */
+const AVATAR_PLACEHOLDER_GIF = Buffer.from(
+  "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7",
+  "base64",
+);
+
+function resolveChartBundlePath(): string | null {
+  const vendor = join(__dirname, "..", "vendor", "chart.umd.js");
+  if (existsSync(vendor)) return vendor;
+  const fromModules = join(
+    __dirname,
+    "..",
+    "node_modules",
+    "chart.js",
+    "dist",
+    "chart.umd.js",
+  );
+  if (existsSync(fromModules)) return fromModules;
+  return null;
+}
+
+import {
+  token,
+  statsInternalToken,
+  sizeLimitMB,
+  adminChatId,
+  redisUrl,
+  queueName,
+  AVG_TIME_CACHE_TTL_MS,
+  API_CACHE_TTL_MS,
+  TG_CHAT_CACHE_TTL,
+  TG_AVATAR_CACHE_TTL,
+  TG_API_DELAY_MS,
+  JOBS_RETENTION_DAYS,
+  JOBS_PURGE_INTERVAL_HOURS,
+} from "./config";
+import { parseDashboardBasicAuth, timingSafeEqualUtf8 } from "./utils";
 import type { StatsBody } from "./types";
 import { initDB, pool, startJobsRetentionSchedule } from "./db";
 import { extractSupportedUrls } from "./urls";
@@ -24,8 +60,15 @@ console.log("🔧 Environment variables:");
 console.log(`  BOT_TOKEN: ${token ? "SET" : "NOT SET"}`);
 console.log(`  DATABASE_URL: ${process.env.DATABASE_URL ? "SET" : "NOT SET"}`);
 console.log(`  ADMIN_CHAT_ID: ${adminChatId ?? "NOT SET"}`);
-console.log(`  HTTP_PROXY: ${process.env.HTTP_PROXY}`);
-console.log(`  HTTPS_PROXY: ${process.env.HTTPS_PROXY}`);
+console.log(
+  `  POST /stats: ${
+    process.env.STATS_INTERNAL_TOKEN?.trim()
+      ? "секрет из STATS_INTERNAL_TOKEN"
+      : "секрет выведен из BOT_TOKEN"
+  }`,
+);
+console.log(`  HTTP_PROXY: ${process.env.HTTP_PROXY ? "SET" : "NOT SET"}`);
+console.log(`  HTTPS_PROXY: ${process.env.HTTPS_PROXY ? "SET" : "NOT SET"}`);
 
 if (!token) {
   console.error("BOT_TOKEN is not set!");
@@ -55,7 +98,7 @@ async function getAverageProcessingTime(): Promise<number> {
     const since = Date.now() - 7 * 24 * 3600_000;
     const { rows } = await pool.query(
       `SELECT AVG(duration_ms) as avg FROM jobs WHERE status = 'success' AND ts > $1 AND duration_ms > 0`,
-      [since]
+      [since],
     );
     const value = Math.round(Number(rows[0]?.avg) ?? 0);
     avgTimeCache = { value, expiresAt: Date.now() + AVG_TIME_CACHE_TTL_MS };
@@ -72,7 +115,7 @@ bot.on("message:text", async (ctx) => {
     await ctx.reply(
       isAdmin(ctx.chat.id)
         ? "🟢 Ты админ! Команды: /help"
-        : "👋 Привет! Отправь ссылку на TikTok, YouTube Shorts, VK Clips, Instagram (Reels/посты) или X/Twitter (пост со статусом)."
+        : "👋 Привет! Отправь ссылку на TikTok, YouTube Shorts, VK Clips, Instagram (Reels/посты) или X/Twitter (пост со статусом).",
     );
     return;
   }
@@ -91,7 +134,12 @@ bot.on("message:text", async (ctx) => {
     if (count > RATE_LIMIT) {
       await ctx.reply(
         `⏳ Слишком много запросов. Лимит: ${RATE_LIMIT} в минуту. Подождите немного.`,
-        { reply_parameters: { message_id: ctx.message.message_id, allow_sending_without_reply: true } }
+        {
+          reply_parameters: {
+            message_id: ctx.message.message_id,
+            allow_sending_without_reply: true,
+          },
+        },
       );
       return;
     }
@@ -99,7 +147,7 @@ bot.on("message:text", async (ctx) => {
 
   const jobs = await queue.getJobs(["waiting", "active"]);
   const urlsInQueue = new Set(
-    jobs.map((j) => (j.data as { url?: string })?.url).filter(Boolean)
+    jobs.map((j) => (j.data as { url?: string })?.url).filter(Boolean),
   );
 
   const toAdd = extractedList.filter((e) => !urlsInQueue.has(e.url));
@@ -107,7 +155,10 @@ bot.on("message:text", async (ctx) => {
 
   if (toAdd.length === 0) {
     await ctx.reply("⏳ Эта ссылка уже в очереди.", {
-      reply_parameters: { message_id: ctx.message.message_id, allow_sending_without_reply: true },
+      reply_parameters: {
+        message_id: ctx.message.message_id,
+        allow_sending_without_reply: true,
+      },
     });
     return;
   }
@@ -127,7 +178,10 @@ bot.on("message:text", async (ctx) => {
           : "Обрабатываю ссылку…";
 
     const ack = await ctx.reply(msg, {
-      reply_parameters: { message_id: ctx.message.message_id, allow_sending_without_reply: true },
+      reply_parameters: {
+        message_id: ctx.message.message_id,
+        allow_sending_without_reply: true,
+      },
     });
 
     await queue.add(
@@ -149,14 +203,20 @@ bot.on("message:text", async (ctx) => {
         attempts: 3,
         backoff: { type: "exponential", delay: 5000 },
         jobId: `${ctx.chat.id}:${ctx.message.message_id}:${i}`,
-      }
+      },
     );
   }
 
   if (duplicates > 0) {
-    await ctx.reply(`ℹ️ ${duplicates} ссылок уже в очереди, добавлено ${toAdd.length}.`, {
-      reply_parameters: { message_id: ctx.message.message_id, allow_sending_without_reply: true },
-    });
+    await ctx.reply(
+      `ℹ️ ${duplicates} ссылок уже в очереди, добавлено ${toAdd.length}.`,
+      {
+        reply_parameters: {
+          message_id: ctx.message.message_id,
+          allow_sending_without_reply: true,
+        },
+      },
+    );
   }
 });
 
@@ -172,6 +232,21 @@ bot.catch((err: { error: unknown }) => {
 
 const fastify = Fastify({ logger: true });
 
+async function assertStatsInternalAuth(
+  request: FastifyRequest,
+  reply: FastifyReply,
+): Promise<void> {
+  const bearer = request.headers.authorization?.match(/^Bearer\s+(\S+)/i)?.[1];
+  const headerToken =
+    (typeof request.headers["x-stats-token"] === "string"
+      ? request.headers["x-stats-token"]
+      : undefined) ?? bearer;
+  if (!timingSafeEqualUtf8(headerToken ?? "", statsInternalToken)) {
+    await reply.status(401).send({ error: "Unauthorized" });
+    return;
+  }
+}
+
 let tgLastCall = 0;
 
 async function tgRateLimit(): Promise<void> {
@@ -183,7 +258,9 @@ async function tgRateLimit(): Promise<void> {
   tgLastCall = Date.now();
 }
 
-async function getCachedChat(chatId: number): Promise<{ title?: string; type?: string; username?: string } | null> {
+async function getCachedChat(
+  chatId: number,
+): Promise<{ title?: string; type?: string; username?: string } | null> {
   const key = `tg:chat:${chatId}`;
   try {
     const cached = await connection.get(key);
@@ -234,13 +311,40 @@ async function getCachedAvatarPath(userId: number): Promise<string | null> {
     }
   } catch (e: unknown) {
     const err = e as { description?: string };
-    console.warn(`getUserProfilePhotos(${userId}) failed:`, err?.description || e);
+    console.warn(
+      `getUserProfilePhotos(${userId}) failed:`,
+      err?.description || e,
+    );
   }
   return null;
 }
 
 async function startServer() {
   fastify.get("/health", async () => ({ ok: true }));
+
+  fastify.get("/favicon.ico", async (_req, reply) =>
+    reply
+      .header("Cache-Control", "public, max-age=86400")
+      .type("image/gif")
+      .send(AVATAR_PLACEHOLDER_GIF),
+  );
+
+  fastify.get("/vendor/chart.umd.js", async (_req, reply) => {
+    const chartPath = resolveChartBundlePath();
+    if (!chartPath) {
+      console.error(
+        "Chart.js не найден: vendor/chart.umd.js или npm i chart.js (dev)",
+      );
+      return reply
+        .status(503)
+        .type("application/javascript; charset=utf-8")
+        .send("console.error('Chart.js bundle missing');\n");
+    }
+    return reply
+      .header("Cache-Control", "public, max-age=86400")
+      .type("application/javascript; charset=utf-8")
+      .send(createReadStream(chartPath));
+  });
 
   const statsBodySchema = {
     type: "object",
@@ -266,7 +370,10 @@ async function startServer() {
 
   fastify.post(
     "/stats",
-    { schema: { body: statsBodySchema } },
+    {
+      preHandler: assertStatsInternalAuth,
+      schema: { body: statsBodySchema },
+    },
     async (request) => {
       const body = request.body as StatsBody;
       const {
@@ -284,28 +391,27 @@ async function startServer() {
       } = body;
 
       await pool.query(
-      `INSERT INTO jobs (ts, url, chat_id, user_id, username, first_name, platform, status, bytes, duration_ms, error_message)
+        `INSERT INTO jobs (ts, url, chat_id, user_id, username, first_name, platform, status, bytes, duration_ms, error_message)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
-      [
-        ts,
-        url,
-        chat_id,
-        user_id ?? null,
-        username ?? null,
-        first_name ?? null,
-        platform ?? null,
-        status,
-        bytes,
-        duration_ms,
-        error_message ?? null,
-      ]
-    );
+        [
+          ts,
+          url,
+          chat_id,
+          user_id ?? null,
+          username ?? null,
+          first_name ?? null,
+          platform ?? null,
+          status,
+          bytes,
+          duration_ms,
+          error_message ?? null,
+        ],
+      );
 
       return { ok: true };
-    }
+    },
   );
 
-  const API_CACHE_TTL_MS = 10_000;
   const apiCache = new Map<string, { data: unknown; expiresAt: number }>();
 
   function getCached<T>(key: string, fetcher: () => Promise<T>): Promise<T> {
@@ -317,188 +423,6 @@ async function startServer() {
       return data;
     });
   }
-
-  fastify.get("/api/queue", async () => {
-    const [waiting, active, delayed, failed] = await Promise.all([
-      queue.getWaitingCount(),
-      queue.getActiveCount(),
-      queue.getDelayedCount(),
-      queue.getFailedCount(),
-    ]);
-    return { waiting, active, delayed, failed };
-  });
-
-  fastify.get("/api/chat/:chatId", async (request: any, reply: any) => {
-    const chatId = Number((request as any).params.chatId);
-    if (!chatId) return reply.status(400).send({ error: "Invalid chatId" });
-    const chat = await getCachedChat(chatId);
-    return chat || { error: "Chat not found" };
-  });
-
-  fastify.get("/api/avatar/:userId", async (request: any, reply: any) => {
-    const userId = Number((request as any).params.userId);
-    if (!userId) return reply.status(400).send({ error: "Invalid userId" });
-    const path = await getCachedAvatarPath(userId);
-    if (!path) return reply.status(404).send({ error: "Avatar not found" });
-    const url = `https://api.telegram.org/file/bot${token}/${path}`;
-    try {
-      const res = await fetch(url);
-      if (!res.ok) return reply.status(502).send({ error: "Telegram fetch failed" });
-      const contentType = res.headers.get("content-type") || "image/jpeg";
-      return reply.type(contentType).send(res.body);
-    } catch (e) {
-      return reply.status(502).send({ error: "Proxy failed" });
-    }
-  });
-
-  fastify.get("/api/stats", async (request: any) => {
-    return getCached("stats", async () => {
-      const now = Date.now();
-      const { rows } = await pool.query(
-        `
-      SELECT
-        COUNT(*) FILTER (WHERE ts >= $1) AS d_total,
-        COUNT(*) FILTER (WHERE ts >= $2) AS w_total,
-        COUNT(*) FILTER (WHERE ts >= $3) AS m_total,
-        COUNT(*)                          AS all_total,
-        COALESCE(SUM(bytes), 0)           AS all_bytes,
-        COALESCE(AVG(duration_ms) FILTER (WHERE duration_ms > 0), 0) AS avg_ms,
-        COUNT(*) FILTER (WHERE status = 'success')    AS total_success,
-        COUNT(*) FILTER (WHERE status = 'cached')     AS total_cached,
-        COUNT(*) FILTER (WHERE status = 'failed')     AS total_failed,
-        COUNT(*) FILTER (WHERE status = 'compressed') AS total_compressed,
-        COUNT(*) FILTER (WHERE status = 'too_large')  AS total_too_large,
-        COUNT(DISTINCT chat_id)                        AS unique_chats,
-        COUNT(DISTINCT user_id) FILTER (WHERE user_id IS NOT NULL) AS unique_users
-      FROM jobs
-    `,
-        [now - 86400_000, now - 7 * 86400_000, now - 30 * 86400_000]
-      );
-
-      const trafficByPlatformQ = await pool.query(
-        `SELECT platform, COALESCE(SUM(bytes), 0) AS total_bytes
-         FROM jobs WHERE ts >= $1 AND platform IS NOT NULL
-         GROUP BY platform ORDER BY total_bytes DESC`,
-        [now - 30 * 86400_000]
-      );
-
-      const avgByPlatformQ = await pool.query(
-        `SELECT platform, AVG(duration_ms) FILTER (WHERE duration_ms > 0) AS avg_ms
-         FROM jobs WHERE ts >= $1 AND platform IS NOT NULL
-         GROUP BY platform`,
-        [now - 30 * 86400_000]
-      );
-
-      const topUsersQ = await pool.query(
-        `SELECT user_id, MAX(first_name) AS name, MAX(username) AS username, COUNT(*) AS cnt, COALESCE(SUM(bytes), 0) AS total_bytes
-         FROM jobs WHERE user_id IS NOT NULL
-         GROUP BY user_id ORDER BY cnt DESC LIMIT 5`
-      );
-
-      const r = rows[0];
-      const proxyEnabled = !!(
-        process.env.HTTP_PROXY ||
-        process.env.HTTPS_PROXY ||
-        process.env.ALL_PROXY
-      );
-
-      return {
-        daily: Number(r.d_total),
-        weekly: Number(r.w_total),
-        monthly: Number(r.m_total),
-        total: Number(r.all_total),
-        traffic: Math.round((Number(r.all_bytes) / 1024 / 1024) * 10) / 10,
-        avgDuration: Math.round(Number(r.avg_ms)),
-        totalSuccess: Number(r.total_success),
-        totalCached: Number(r.total_cached),
-        totalFailed: Number(r.total_failed),
-        totalCompressed: Number(r.total_compressed),
-        totalTooLarge: Number(r.total_too_large),
-        uniqueChats: Number(r.unique_chats),
-        uniqueUsers: Number(r.unique_users),
-        proxyEnabled,
-        trafficByPlatform: trafficByPlatformQ.rows.map((p: any) => ({
-          platform: p.platform,
-          bytes: Number(p.total_bytes),
-          mb: Math.round((Number(p.total_bytes) / 1024 / 1024) * 10) / 10,
-        })),
-        avgByPlatform: avgByPlatformQ.rows.map((p: any) => ({
-          platform: p.platform,
-          avgMs: Math.round(Number(p.avg_ms) || 0),
-        })),
-        topUsers: topUsersQ.rows.map((u: any) => ({
-          userId: u.user_id,
-          name: u.name || u.username || String(u.user_id),
-          username: u.username,
-          count: Number(u.cnt),
-          bytes: Number(u.total_bytes),
-          profileUrl: u.username
-            ? `https://t.me/${u.username}`
-            : `https://t.me/id${u.user_id}`,
-          avatarUrl: `/api/avatar/${u.user_id}`,
-        })),
-      };
-    });
-  });
-
-  fastify.get("/api/charts", async (request: any) => {
-    return getCached("charts", async () => {
-      const now = Date.now();
-
-      const hourlyQ = await pool.query(
-        `
-      SELECT
-        EXTRACT(HOUR FROM to_timestamp(ts / 1000.0))::int AS hour,
-        COUNT(*) AS count,
-        COUNT(*) FILTER (WHERE status = 'success') AS success,
-        COUNT(*) FILTER (WHERE status = 'failed')  AS failed
-      FROM jobs WHERE ts >= $1
-      GROUP BY hour ORDER BY hour
-    `,
-        [now - 86400_000]
-      );
-
-      const dailyQ = await pool.query(
-        `
-      SELECT
-        to_char(to_timestamp(ts / 1000.0), 'YYYY-MM-DD') AS date,
-        COUNT(*) AS count,
-        COUNT(*) FILTER (WHERE status = 'success') AS success,
-        COUNT(*) FILTER (WHERE status = 'failed')  AS failed,
-        AVG(duration_ms) FILTER (WHERE duration_ms > 0) AS avg_duration,
-        COALESCE(SUM(bytes), 0) AS total_bytes
-      FROM jobs WHERE ts >= $1
-      GROUP BY date ORDER BY date
-    `,
-        [now - 30 * 86400_000]
-      );
-
-      const platformQ = await pool.query(
-        `
-      SELECT platform, COUNT(*) AS count
-      FROM jobs WHERE ts >= $1 AND platform IS NOT NULL
-      GROUP BY platform ORDER BY count DESC
-    `,
-        [now - 30 * 86400_000]
-      );
-
-      const statusQ = await pool.query(
-        `
-      SELECT status, COUNT(*) AS count
-      FROM jobs WHERE ts >= $1
-      GROUP BY status
-    `,
-        [now - 30 * 86400_000]
-      );
-
-      return {
-        hourly: hourlyQ.rows,
-        daily: dailyQ.rows,
-        platforms: platformQ.rows,
-        statuses: statusQ.rows,
-      };
-    });
-  });
 
   async function buildRecentItems(request: any): Promise<{
     total: number;
@@ -531,7 +455,7 @@ async function startServer() {
 
     const countQ = await pool.query(
       `SELECT COUNT(*) AS total FROM jobs ${where}`,
-      params
+      params,
     );
 
     const dataQ = await pool.query(
@@ -539,12 +463,17 @@ async function startServer() {
        FROM jobs ${where}
        ORDER BY ts DESC
        LIMIT $${idx++} OFFSET $${idx++}`,
-      [...params, Math.min(Number(limit), 200), Number(offset)]
+      [...params, Math.min(Number(limit), 200), Number(offset)],
     );
 
     const rows = dataQ.rows as any[];
-    const chatIds = [...new Set(rows.map((r) => Number(r.chat_id)).filter(Boolean))];
-    const chatCache: Record<string, { title?: string; type?: string; username?: string }> = {};
+    const chatIds = [
+      ...new Set(rows.map((r) => Number(r.chat_id)).filter(Boolean)),
+    ];
+    const chatCache: Record<
+      string,
+      { title?: string; type?: string; username?: string }
+    > = {};
     for (const cid of chatIds) {
       const chat = await getCachedChat(cid);
       if (chat) chatCache[String(cid)] = chat;
@@ -556,8 +485,11 @@ async function startServer() {
       const chatTitle = chat?.title || (chatId < 0 ? `Чат ${chatId}` : null);
       const chatType = chat?.type;
       const chatUrl = chat?.username ? `https://t.me/${chat.username}` : null;
-      const userProfileUrl =
-        r.username ? `https://t.me/${r.username}` : r.user_id ? `https://t.me/id${r.user_id}` : null;
+      const userProfileUrl = r.username
+        ? `https://t.me/${r.username}`
+        : r.user_id
+          ? `https://t.me/id${r.user_id}`
+          : null;
       return {
         ...r,
         chatTitle,
@@ -573,30 +505,215 @@ async function startServer() {
     };
   }
 
-  fastify.get("/api/recent", async (request: any) => {
-    return buildRecentItems(request);
-  });
-
-  await fastify.register(async function (fastify) {
-    await fastify.register(fastifyBasicAuth, {
+  await fastify.register(async function (secured) {
+    await secured.register(fastifyBasicAuth, {
       validate: async (username: any, password: any) => {
-        const [u, p] = (
-          process.env.DASHBOARD_BASIC_AUTH ?? "admin:admin"
-        ).split(":");
+        const raw = process.env.DASHBOARD_BASIC_AUTH ?? "admin:admin";
+        const { username: u, password: p } = parseDashboardBasicAuth(raw);
         if (username !== u || password !== p) throw new Error("Auth failed");
       },
       authenticate: true,
     });
 
-    fastify.after(() => {
-      fastify.addHook("onRequest", fastify.basicAuth);
+    secured.after(() => {
+      secured.addHook("onRequest", secured.basicAuth);
     });
 
-    fastify.get("/dashboard", async (_req: any, reply: any) => {
+    secured.get("/api/queue", async () => {
+      const [waiting, active, delayed, failed] = await Promise.all([
+        queue.getWaitingCount(),
+        queue.getActiveCount(),
+        queue.getDelayedCount(),
+        queue.getFailedCount(),
+      ]);
+      return { waiting, active, delayed, failed };
+    });
+
+    secured.get("/api/chat/:chatId", async (request: any, reply: any) => {
+      const chatId = Number((request as any).params.chatId);
+      if (!chatId) return reply.status(400).send({ error: "Invalid chatId" });
+      const chat = await getCachedChat(chatId);
+      return chat || { error: "Chat not found" };
+    });
+
+    secured.get("/api/avatar/:userId", async (request: any, reply: any) => {
+      const userId = Number((request as any).params.userId);
+      if (!userId) return reply.status(400).send({ error: "Invalid userId" });
+      const sendPlaceholder = () =>
+        reply
+          .header("Cache-Control", "public, max-age=3600")
+          .type("image/gif")
+          .send(AVATAR_PLACEHOLDER_GIF);
+      const path = await getCachedAvatarPath(userId);
+      if (!path) return sendPlaceholder();
+      const url = `https://api.telegram.org/file/bot${token}/${path}`;
+      try {
+        const res = await fetch(url);
+        if (!res.ok) return sendPlaceholder();
+        const contentType = res.headers.get("content-type") || "image/jpeg";
+        return reply
+          .header("Cache-Control", "public, max-age=300")
+          .type(contentType)
+          .send(res.body);
+      } catch {
+        return sendPlaceholder();
+      }
+    });
+
+    secured.get("/api/stats", async (request: any) => {
+      return getCached("stats", async () => {
+        const now = Date.now();
+        const { rows } = await pool.query(
+          `
+      SELECT
+        COUNT(*) FILTER (WHERE ts >= $1) AS d_total,
+        COUNT(*) FILTER (WHERE ts >= $2) AS w_total,
+        COUNT(*) FILTER (WHERE ts >= $3) AS m_total,
+        COUNT(*)                          AS all_total,
+        COALESCE(SUM(bytes), 0)           AS all_bytes,
+        COALESCE(AVG(duration_ms) FILTER (WHERE duration_ms > 0), 0) AS avg_ms,
+        COUNT(*) FILTER (WHERE status = 'success')    AS total_success,
+        COUNT(*) FILTER (WHERE status = 'cached')     AS total_cached,
+        COUNT(*) FILTER (WHERE status = 'failed')     AS total_failed,
+        COUNT(*) FILTER (WHERE status = 'compressed') AS total_compressed,
+        COUNT(*) FILTER (WHERE status = 'too_large')  AS total_too_large,
+        COUNT(DISTINCT chat_id)                        AS unique_chats,
+        COUNT(DISTINCT user_id) FILTER (WHERE user_id IS NOT NULL) AS unique_users
+      FROM jobs
+    `,
+          [now - 86400_000, now - 7 * 86400_000, now - 30 * 86400_000],
+        );
+
+        const trafficByPlatformQ = await pool.query(
+          `SELECT platform, COALESCE(SUM(bytes), 0) AS total_bytes
+         FROM jobs WHERE ts >= $1 AND platform IS NOT NULL
+         GROUP BY platform ORDER BY total_bytes DESC`,
+          [now - 30 * 86400_000],
+        );
+
+        const avgByPlatformQ = await pool.query(
+          `SELECT platform, AVG(duration_ms) FILTER (WHERE duration_ms > 0) AS avg_ms
+         FROM jobs WHERE ts >= $1 AND platform IS NOT NULL
+         GROUP BY platform`,
+          [now - 30 * 86400_000],
+        );
+
+        const topUsersQ = await pool.query(
+          `SELECT user_id, MAX(first_name) AS name, MAX(username) AS username, COUNT(*) AS cnt, COALESCE(SUM(bytes), 0) AS total_bytes
+         FROM jobs WHERE user_id IS NOT NULL
+         GROUP BY user_id ORDER BY cnt DESC LIMIT 5`,
+        );
+
+        const r = rows[0];
+        const proxyEnabled = !!(
+          process.env.HTTP_PROXY ||
+          process.env.HTTPS_PROXY ||
+          process.env.ALL_PROXY
+        );
+
+        return {
+          daily: Number(r.d_total),
+          weekly: Number(r.w_total),
+          monthly: Number(r.m_total),
+          total: Number(r.all_total),
+          traffic: Math.round((Number(r.all_bytes) / 1024 / 1024) * 10) / 10,
+          avgDuration: Math.round(Number(r.avg_ms)),
+          totalSuccess: Number(r.total_success),
+          totalCached: Number(r.total_cached),
+          totalFailed: Number(r.total_failed),
+          totalCompressed: Number(r.total_compressed),
+          totalTooLarge: Number(r.total_too_large),
+          uniqueChats: Number(r.unique_chats),
+          uniqueUsers: Number(r.unique_users),
+          proxyEnabled,
+          trafficByPlatform: trafficByPlatformQ.rows.map((p: any) => ({
+            platform: p.platform,
+            bytes: Number(p.total_bytes),
+            mb: Math.round((Number(p.total_bytes) / 1024 / 1024) * 10) / 10,
+          })),
+          avgByPlatform: avgByPlatformQ.rows.map((p: any) => ({
+            platform: p.platform,
+            avgMs: Math.round(Number(p.avg_ms) || 0),
+          })),
+          topUsers: topUsersQ.rows.map((u: any) => ({
+            userId: u.user_id,
+            name: u.name || u.username || String(u.user_id),
+            username: u.username,
+            count: Number(u.cnt),
+            bytes: Number(u.total_bytes),
+            profileUrl: u.username
+              ? `https://t.me/${u.username}`
+              : `https://t.me/id${u.user_id}`,
+            avatarUrl: `/api/avatar/${u.user_id}`,
+          })),
+        };
+      });
+    });
+
+    secured.get("/api/charts", async (request: any) => {
+      return getCached("charts", async () => {
+        const now = Date.now();
+
+        const hourlyQ = await pool.query(
+          `
+      SELECT
+        EXTRACT(HOUR FROM to_timestamp(ts / 1000.0))::int AS hour,
+        COUNT(*) AS count,
+        COUNT(*) FILTER (WHERE status = 'success') AS success,
+        COUNT(*) FILTER (WHERE status = 'failed')  AS failed
+      FROM jobs WHERE ts >= $1
+      GROUP BY hour ORDER BY hour
+    `,
+          [now - 86400_000],
+        );
+
+        const dailyQ = await pool.query(
+          `
+      SELECT
+        to_char(to_timestamp(ts / 1000.0), 'YYYY-MM-DD') AS date,
+        COUNT(*) AS count,
+        COUNT(*) FILTER (WHERE status = 'success') AS success,
+        COUNT(*) FILTER (WHERE status = 'failed')  AS failed,
+        AVG(duration_ms) FILTER (WHERE duration_ms > 0) AS avg_duration,
+        COALESCE(SUM(bytes), 0) AS total_bytes
+      FROM jobs WHERE ts >= $1
+      GROUP BY date ORDER BY date
+    `,
+          [now - 30 * 86400_000],
+        );
+
+        const platformQ = await pool.query(
+          `
+      SELECT platform, COUNT(*) AS count
+      FROM jobs WHERE ts >= $1 AND platform IS NOT NULL
+      GROUP BY platform ORDER BY count DESC
+    `,
+          [now - 30 * 86400_000],
+        );
+
+        const statusQ = await pool.query(
+          `
+      SELECT status, COUNT(*) AS count
+      FROM jobs WHERE ts >= $1
+      GROUP BY status
+    `,
+          [now - 30 * 86400_000],
+        );
+
+        return {
+          hourly: hourlyQ.rows,
+          daily: dailyQ.rows,
+          platforms: platformQ.rows,
+          statuses: statusQ.rows,
+        };
+      });
+    });
+
+    secured.get("/dashboard", async (_req: any, reply: any) => {
       try {
         const html = readFileSync(
           join(__dirname, "..", "dashboard.html"),
-          "utf-8"
+          "utf-8",
         );
         reply.type("text/html").send(html);
       } catch (error) {
@@ -605,7 +722,7 @@ async function startServer() {
       }
     });
 
-    fastify.get("/api/admin/recent", async (request: any) => {
+    secured.get("/api/admin/recent", async (request: any) => {
       const data = await buildRecentItems(request);
       const items = await Promise.all(
         data.items.map(async (item: { url: string }) => {
@@ -618,12 +735,12 @@ async function startServer() {
               imageCount: probe.imageCount,
             },
           };
-        })
+        }),
       );
       return { ...data, items };
     });
 
-    fastify.get(
+    secured.get(
       "/api/admin/cache/:jobId/video",
       async (request: any, reply: any) => {
         const jobId = Number((request as any).params.jobId);
@@ -632,7 +749,7 @@ async function startServer() {
         }
         const { rows } = await pool.query(
           "SELECT url FROM jobs WHERE id = $1",
-          [jobId]
+          [jobId],
         );
         if (!rows.length) {
           return reply.status(404).send({ error: "Job not found" });
@@ -647,10 +764,10 @@ async function startServer() {
           return reply.status(404).send({ error: "No video in cache" });
         }
         return reply.type("video/mp4").send(createReadStream(p));
-      }
+      },
     );
 
-    fastify.post(
+    secured.post(
       "/api/admin/cache/rehydrate/:jobId",
       async (request: any, reply: any) => {
         const jobId = Number((request as any).params.jobId);
@@ -659,7 +776,7 @@ async function startServer() {
         }
         const { rows } = await pool.query(
           "SELECT url FROM jobs WHERE id = $1",
-          [jobId]
+          [jobId],
         );
         if (!rows.length) {
           return reply.status(404).send({ error: "Job not found" });
@@ -670,10 +787,10 @@ async function startServer() {
           return reply.status(404).send(result);
         }
         return reply.send(result);
-      }
+      },
     );
 
-    fastify.get(
+    secured.get(
       "/api/admin/cache/:jobId/image/:index",
       async (request: any, reply: any) => {
         const jobId = Number((request as any).params.jobId);
@@ -686,7 +803,7 @@ async function startServer() {
         }
         const { rows } = await pool.query(
           "SELECT url FROM jobs WHERE id = $1",
-          [jobId]
+          [jobId],
         );
         if (!rows.length) {
           return reply.status(404).send({ error: "Job not found" });
@@ -701,7 +818,7 @@ async function startServer() {
           return reply.status(404).send({ error: "Image not in cache" });
         }
         return reply.type("image/jpeg").send(createReadStream(p));
-      }
+      },
     );
   });
 
@@ -728,7 +845,7 @@ async function main() {
     bot.api
       .sendMessage(
         adminChatId,
-        "🟢 Бот запущен и готов к работе!\n/help — список команд"
+        "🟢 Бот запущен и готов к работе!\n/help — список команд",
       )
       .catch(() => {});
   }

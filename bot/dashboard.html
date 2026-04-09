@@ -1,10 +1,14 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="ru">
   <head>
     <meta charset="utf-8" />
     <title>TikTok Bot — Dashboard</title>
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E"
+    />
+    <script src="/vendor/chart.umd.js"></script>
     <style>
       * {
         box-sizing: border-box;
@@ -30,7 +34,11 @@
       }
 
       body {
-        font-family: "Inter", system-ui, -apple-system, sans-serif;
+        font-family:
+          "Inter",
+          system-ui,
+          -apple-system,
+          sans-serif;
         background: var(--bg);
         color: var(--text);
         line-height: 1.5;
@@ -590,7 +598,7 @@
         font-size: 0.65rem;
         padding: 1px 5px;
         border-radius: 4px;
-        background: rgba(99,102,241,.2);
+        background: rgba(99, 102, 241, 0.2);
         color: var(--accent2);
       }
 
@@ -656,7 +664,7 @@
           <div class="kpi-label">Успешные</div>
         </div>
         <div class="kpi">
-          <div class="kpi-val" id="k-cached" style="color:#a78bfa">—</div>
+          <div class="kpi-val" id="k-cached" style="color: #a78bfa">—</div>
           <div class="kpi-label">Из кэша</div>
         </div>
         <div class="kpi">
@@ -771,11 +779,24 @@
       </div>
     </div>
 
-    <div id="cache-modal-overlay" class="cache-modal-overlay" aria-hidden="true">
-      <div class="cache-modal" role="dialog" aria-labelledby="cache-modal-title">
+    <div
+      id="cache-modal-overlay"
+      class="cache-modal-overlay"
+      aria-hidden="true"
+    >
+      <div
+        class="cache-modal"
+        role="dialog"
+        aria-labelledby="cache-modal-title"
+      >
         <div class="cache-modal-head">
           <h4 id="cache-modal-title">Кэш запроса</h4>
-          <button type="button" class="cache-modal-close" id="cache-modal-close" aria-label="Закрыть">
+          <button
+            type="button"
+            class="cache-modal-close"
+            id="cache-modal-close"
+            aria-label="Закрыть"
+          >
             ×
           </button>
         </div>
@@ -790,6 +811,7 @@
       let page = 0,
         totalRows = 0;
       let chartsInited = false;
+      let chartMissingLogged = false;
       let dailyC, hourlyC, perfC, platformC, statusC, trafficC;
 
       const chartDefaults = {
@@ -857,24 +879,38 @@
       }
       function platformLabel(p) {
         return (
-          { tiktok: "TikTok", youtube: "YouTube", vk: "VK", instagram: "Instagram", twitter: "X / Twitter" }[p] || p || "—"
+          {
+            tiktok: "TikTok",
+            youtube: "YouTube",
+            vk: "VK",
+            instagram: "Instagram",
+            twitter: "X / Twitter",
+          }[p] ||
+          p ||
+          "—"
         );
       }
 
       async function loadQueue() {
         try {
-          const r = await fetch("/api/queue");
+          const r = await fetch("/api/queue", { credentials: "include" });
           const d = await r.json();
+          if (!r.ok) return;
           document.getElementById("queueStatus").textContent =
-            "очередь: " + d.waiting + " | в работе: " + d.active + (d.failed ? " | ошибок: " + d.failed : "");
+            "очередь: " +
+            d.waiting +
+            " | в работе: " +
+            d.active +
+            (d.failed ? " | ошибок: " + d.failed : "");
         } catch (e) {
           console.error(e);
         }
       }
       async function loadStats() {
         try {
-          const r = await fetch("/api/stats");
+          const r = await fetch("/api/stats", { credentials: "include" });
           const d = await r.json();
+          if (!r.ok) return;
           document.getElementById("k-daily").textContent = d.daily;
           document.getElementById("k-weekly").textContent = d.weekly;
           document.getElementById("k-monthly").textContent = d.monthly;
@@ -887,23 +923,32 @@
               ? (d.traffic / 1024).toFixed(1) + " GB"
               : d.traffic + " MB";
           document.getElementById("k-avgtime").textContent = fmtMs(
-            d.avgDuration
+            d.avgDuration,
           );
           document.getElementById("lastUpdate").textContent =
             "обновлено " + new Date().toLocaleTimeString("ru");
           if (d.trafficByPlatform && d.trafficByPlatform.length) {
-            document.getElementById("trafficByPlatform").innerHTML = d.trafficByPlatform
-              .map((p) => `<div class="row"><span>${platformLabel(p.platform)}</span><span>${p.mb} MB</span></div>`)
-              .join("");
+            document.getElementById("trafficByPlatform").innerHTML =
+              d.trafficByPlatform
+                .map(
+                  (p) =>
+                    `<div class="row"><span>${platformLabel(p.platform)}</span><span>${p.mb} MB</span></div>`,
+                )
+                .join("");
           } else {
-            document.getElementById("trafficByPlatform").innerHTML = "<div class='row'><span>—</span></div>";
+            document.getElementById("trafficByPlatform").innerHTML =
+              "<div class='row'><span>—</span></div>";
           }
           if (d.avgByPlatform && d.avgByPlatform.length) {
             document.getElementById("avgByPlatform").innerHTML = d.avgByPlatform
-              .map((p) => `<div class="row"><span>${platformLabel(p.platform)}</span><span>${fmtMs(p.avgMs)}</span></div>`)
+              .map(
+                (p) =>
+                  `<div class="row"><span>${platformLabel(p.platform)}</span><span>${fmtMs(p.avgMs)}</span></div>`,
+              )
               .join("");
           } else {
-            document.getElementById("avgByPlatform").innerHTML = "<div class='row'><span>—</span></div>";
+            document.getElementById("avgByPlatform").innerHTML =
+              "<div class='row'><span>—</span></div>";
           }
           if (d.topUsers && d.topUsers.length) {
             document.getElementById("topUsers").innerHTML = d.topUsers
@@ -916,7 +961,8 @@
               })
               .join("");
           } else {
-            document.getElementById("topUsers").innerHTML = "<div class='row'><span>—</span></div>";
+            document.getElementById("topUsers").innerHTML =
+              "<div class='row'><span>—</span></div>";
           }
         } catch (e) {
           console.error(e);
@@ -931,34 +977,57 @@
 
       async function loadCharts() {
         try {
-          const r = await fetch("/api/charts");
+          if (typeof Chart === "undefined") {
+            if (!chartMissingLogged) {
+              chartMissingLogged = true;
+              console.warn(
+                "Chart.js не загружен (откройте /vendor/chart.umd.js или см. логи контейнера bot).",
+              );
+            }
+            return;
+          }
+          const r = await fetch("/api/charts", { credentials: "include" });
           const d = await r.json();
-          renderDailyChart(d.daily);
-          renderHourlyChart(d.hourly);
-          renderPerfChart(d.daily);
-          renderTrafficChart(d.daily);
-          renderPlatformChart(d.platforms);
-          renderStatusChart(d.statuses);
+          if (!r.ok) {
+            console.warn("charts API:", r.status, d);
+            return;
+          }
+          const daily = Array.isArray(d.daily) ? d.daily : [];
+          const hourly = Array.isArray(d.hourly) ? d.hourly : [];
+          const platforms = Array.isArray(d.platforms) ? d.platforms : [];
+          const statuses = Array.isArray(d.statuses) ? d.statuses : [];
+          renderDailyChart(daily);
+          renderHourlyChart(hourly);
+          renderPerfChart(daily);
+          renderTrafficChart(daily);
+          renderPlatformChart(platforms);
+          renderStatusChart(statuses);
         } catch (e) {
           console.error(e);
         }
       }
       function renderTrafficChart(data) {
+        if (!Array.isArray(data)) data = [];
         const labels = data.map((d) => {
           const p = d.date.split("-");
           return p[2] + "." + p[1];
         });
-        const mbData = data.map((d) => Math.round((Number(d.total_bytes || 0) / 1024 / 1024) * 10) / 10);
+        const mbData = data.map(
+          (d) =>
+            Math.round((Number(d.total_bytes || 0) / 1024 / 1024) * 10) / 10,
+        );
         const cfg = {
           type: "bar",
           data: {
             labels,
-            datasets: [{
-              label: "Трафик (MB)",
-              data: mbData,
-              backgroundColor: "rgba(6,182,212,.6)",
-              borderRadius: 4,
-            }],
+            datasets: [
+              {
+                label: "Трафик (MB)",
+                data: mbData,
+                backgroundColor: "rgba(6,182,212,.6)",
+                borderRadius: 4,
+              },
+            ],
           },
           options: chartDefaults,
         };
@@ -971,6 +1040,7 @@
       }
 
       function renderDailyChart(data) {
+        if (!Array.isArray(data)) data = [];
         const labels = data.map((d) => {
           const p = d.date.split("-");
           return p[2] + "." + p[1];
@@ -1019,6 +1089,7 @@
       }
 
       function renderHourlyChart(data) {
+        if (!Array.isArray(data)) data = [];
         const full = Array.from({ length: 24 }, (_, i) => ({
           hour: i,
           count: 0,
@@ -1062,6 +1133,7 @@
       }
 
       function renderPerfChart(data) {
+        if (!Array.isArray(data)) data = [];
         const labels = data.map((d) => {
           const p = d.date.split("-");
           return p[2] + "." + p[1];
@@ -1206,40 +1278,60 @@
           totalRows = d.total;
           const tbody = document.getElementById("tbody");
           function chatTypeLabel(t) {
-            return { private: "Личка", group: "Группа", supergroup: "Группа", channel: "Канал" }[t] || t || "";
+            return (
+              {
+                private: "Личка",
+                group: "Группа",
+                supergroup: "Группа",
+                channel: "Канал",
+              }[t] ||
+              t ||
+              ""
+            );
           }
           tbody.innerHTML = d.items
-            .map(
-              (j) => {
-                const url = j.url || "";
-                const urlDisplay = url ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(url)}</a>` : "—";
-                const err = j.error_message ? escapeHtml(String(j.error_message).slice(0, 80)) : "";
-                const userName = j.first_name || j.username || (j.user_id ? "id" + j.user_id : "") || j.chat_id || "—";
-                const userLink = j.userProfileUrl
-                  ? `<a href="${escapeHtml(j.userProfileUrl)}" target="_blank" rel="noopener" class="user-name">${escapeHtml(userName)}</a>`
-                  : `<span class="user-name">${escapeHtml(userName)}</span>`;
-                const avatarHtml = j.user_id
-                  ? `<img class="user-avatar" src="/api/avatar/${j.user_id}" alt="" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';" /><span class="user-avatar-placeholder" style="display:none">?</span>`
-                  : `<span class="user-avatar-placeholder">—</span>`;
-                const chatTitle = j.chatTitle || (j.chat_id ? "Chat " + j.chat_id : "—");
-                const chatLink = j.chatUrl
-                  ? `<a href="${escapeHtml(j.chatUrl)}" target="_blank" rel="noopener">${escapeHtml(chatTitle)}</a>`
-                  : escapeHtml(chatTitle);
-                const chatBadge = j.chatType ? `<span class="chat-type-badge">${chatTypeLabel(j.chatType)}</span> ` : "";
-                const cp = j.cachePreview || {};
-                let cacheCell;
-                if (cp.available && cp.kind) {
-                  const lbl =
-                    cp.kind === "video"
-                      ? "Видео"
-                      : cp.imageCount === 1
-                        ? "1 фото"
-                        : `${cp.imageCount} фото`;
-                  cacheCell = `<button type="button" class="btn-cache-view" data-job-id="${j.id}" data-kind="${cp.kind}" data-image-count="${cp.imageCount || 0}">${escapeHtml(lbl)}</button>`;
-                } else {
-                  cacheCell = `<span class="cache-miss-wrap"><span class="cache-miss" title="Нет в кэше или истёк срок (до ~24 ч)">—</span><button type="button" class="btn-cache-rehydrate" title="Восстановить связь с кэшем на диске (обновить Redis)" data-job-id="${j.id}" aria-label="Восстановить кэш">↻</button></span>`;
-                }
-                return `<tr>
+            .map((j) => {
+              const url = j.url || "";
+              const urlDisplay = url
+                ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(url)}</a>`
+                : "—";
+              const err = j.error_message
+                ? escapeHtml(String(j.error_message).slice(0, 80))
+                : "";
+              const userName =
+                j.first_name ||
+                j.username ||
+                (j.user_id ? "id" + j.user_id : "") ||
+                j.chat_id ||
+                "—";
+              const userLink = j.userProfileUrl
+                ? `<a href="${escapeHtml(j.userProfileUrl)}" target="_blank" rel="noopener" class="user-name">${escapeHtml(userName)}</a>`
+                : `<span class="user-name">${escapeHtml(userName)}</span>`;
+              const avatarHtml = j.user_id
+                ? `<img class="user-avatar" src="/api/avatar/${j.user_id}" alt="" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';" /><span class="user-avatar-placeholder" style="display:none">?</span>`
+                : `<span class="user-avatar-placeholder">—</span>`;
+              const chatTitle =
+                j.chatTitle || (j.chat_id ? "Chat " + j.chat_id : "—");
+              const chatLink = j.chatUrl
+                ? `<a href="${escapeHtml(j.chatUrl)}" target="_blank" rel="noopener">${escapeHtml(chatTitle)}</a>`
+                : escapeHtml(chatTitle);
+              const chatBadge = j.chatType
+                ? `<span class="chat-type-badge">${chatTypeLabel(j.chatType)}</span> `
+                : "";
+              const cp = j.cachePreview || {};
+              let cacheCell;
+              if (cp.available && cp.kind) {
+                const lbl =
+                  cp.kind === "video"
+                    ? "Видео"
+                    : cp.imageCount === 1
+                      ? "1 фото"
+                      : `${cp.imageCount} фото`;
+                cacheCell = `<button type="button" class="btn-cache-view" data-job-id="${j.id}" data-kind="${cp.kind}" data-image-count="${cp.imageCount || 0}">${escapeHtml(lbl)}</button>`;
+              } else {
+                cacheCell = `<span class="cache-miss-wrap"><span class="cache-miss" title="Нет в кэше или истёк срок (до ~24 ч)">—</span><button type="button" class="btn-cache-rehydrate" title="Восстановить связь с кэшем на диске (обновить Redis)" data-job-id="${j.id}" aria-label="Восстановить кэш">↻</button></span>`;
+              }
+              return `<tr>
       <td>${fmtTime(j.ts)}</td>
       <td><div class="user-cell">${avatarHtml}${userLink}</div></td>
       <td>${chatBadge}${chatLink}</td>
@@ -1251,8 +1343,7 @@
       <td class="cache-cell">${cacheCell}</td>
       <td class="error-cell" title="${err}">${err || "—"}</td>
     </tr>`;
-              }
-            )
+            })
             .join("");
 
           const pages = Math.ceil(totalRows / PAGE_SIZE);
@@ -1310,8 +1401,7 @@
           v.pause();
           v.removeAttribute("src");
         }
-        body.innerHTML =
-          '<span class="cache-modal-loading">Загрузка…</span>';
+        body.innerHTML = '<span class="cache-modal-loading">Загрузка…</span>';
         revokeCacheModalUrls();
       }
 
@@ -1321,8 +1411,7 @@
         const body = document.getElementById("cache-modal-body");
         overlay.classList.add("open");
         overlay.setAttribute("aria-hidden", "false");
-        body.innerHTML =
-          '<span class="cache-modal-loading">Загрузка…</span>';
+        body.innerHTML = '<span class="cache-modal-loading">Загрузка…</span>';
 
         try {
           if (kind === "video") {
@@ -1418,42 +1507,42 @@
       }
 
       window.onload = () => {
-        document.getElementById("tbody").addEventListener("click", async (e) => {
-          const reh = e.target.closest(".btn-cache-rehydrate");
-          if (reh) {
-            e.preventDefault();
-            const jobId = reh.dataset.jobId;
-            reh.disabled = true;
-            try {
-              const r = await fetch(`/api/admin/cache/rehydrate/${jobId}`, {
-                method: "POST",
-                credentials: "include",
-              });
-              const data = await r.json().catch(() => ({}));
-              if (!r.ok) {
-                alert(
-                  data.message ||
-                    data.error ||
-                    "Не удалось восстановить кэш"
-                );
+        document
+          .getElementById("tbody")
+          .addEventListener("click", async (e) => {
+            const reh = e.target.closest(".btn-cache-rehydrate");
+            if (reh) {
+              e.preventDefault();
+              const jobId = reh.dataset.jobId;
+              reh.disabled = true;
+              try {
+                const r = await fetch(`/api/admin/cache/rehydrate/${jobId}`, {
+                  method: "POST",
+                  credentials: "include",
+                });
+                const data = await r.json().catch(() => ({}));
+                if (!r.ok) {
+                  alert(
+                    data.message || data.error || "Не удалось восстановить кэш",
+                  );
+                }
+                loadRecent();
+              } catch (err) {
+                console.error(err);
+                alert("Ошибка сети");
+              } finally {
+                reh.disabled = false;
               }
-              loadRecent();
-            } catch (err) {
-              console.error(err);
-              alert("Ошибка сети");
-            } finally {
-              reh.disabled = false;
+              return;
             }
-            return;
-          }
-          const btn = e.target.closest(".btn-cache-view");
-          if (!btn) return;
-          openCacheModal(
-            btn.dataset.jobId,
-            btn.dataset.kind,
-            Number(btn.dataset.imageCount || 0)
-          );
-        });
+            const btn = e.target.closest(".btn-cache-view");
+            if (!btn) return;
+            openCacheModal(
+              btn.dataset.jobId,
+              btn.dataset.kind,
+              Number(btn.dataset.imageCount || 0),
+            );
+          });
         document
           .getElementById("cache-modal-close")
           .addEventListener("click", closeCacheModal);

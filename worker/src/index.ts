@@ -13,7 +13,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
-import { randomUUID, createHash } from "node:crypto";
+import { randomUUID, createHash, createHmac } from "node:crypto";
 import { Bot, InputFile } from "grammy";
 import { setTimeout as sleep } from "node:timers/promises";
 
@@ -23,6 +23,16 @@ const connection = new IORedis(redisUrl, {
   maxRetriesPerRequest: null,
 });
 const bot = new Bot(process.env.TELEGRAM_BOT_TOKEN!);
+
+function deriveStatsIngestSecret(botToken: string): string {
+  return createHmac("sha256", botToken)
+    .update("tiktok-bot:stats-ingest:v1")
+    .digest("hex");
+}
+
+const statsIngestSecret =
+  (process.env.STATS_INTERNAL_TOKEN ?? "").trim() ||
+  deriveStatsIngestSecret(process.env.TELEGRAM_BOT_TOKEN ?? "");
 const SIZE_LIMIT_MB = Number(process.env.SIZE_LIMIT_MB || "50");
 const MAX_BYTES = SIZE_LIMIT_MB * 1024 * 1024;
 
@@ -83,11 +93,9 @@ function saveImagesToCache(imagePaths: string[], expandedUrl: string): void {
     }
     writeFileSync(
       path.join(dir, "manifest.json"),
-      JSON.stringify({ type: "images", count: imagePaths.length })
+      JSON.stringify({ type: "images", count: imagePaths.length }),
     );
-    console.log(
-      `📦 Альбом сохранён в кэш: ${key} (${imagePaths.length} фото)`
-    );
+    console.log(`📦 Альбом сохранён в кэш: ${key} (${imagePaths.length} фото)`);
   } catch (e) {
     console.warn("Не удалось сохранить альбом в кэш:", e);
   }
@@ -154,7 +162,7 @@ const PROXY_LIST = XRAY_ENABLED
 
 if (!XRAY_ENABLED) {
   console.log(
-    "🌐 USE_XRAY=false → все Xray-прокси отключены, загрузка идёт напрямую"
+    "🌐 USE_XRAY=false → все Xray-прокси отключены, загрузка идёт напрямую",
   );
 }
 
@@ -169,7 +177,7 @@ async function isProxyAvailable(proxyUrl: string): Promise<boolean> {
       await Promise.race([
         lookup(hostname),
         new Promise((_, reject) =>
-          setTimeout(() => reject(new Error("timeout")), 1000)
+          setTimeout(() => reject(new Error("timeout")), 1000),
         ),
       ]);
 
@@ -224,21 +232,56 @@ function resolveDownloadedFile(outPath: string): string | null {
 const EXPAND_URL_CACHE_PREFIX = "expand_url:";
 /** TTL expand/mapping в Redis (сек); по умолчанию = срок файлового кэша (иначе админка «теряет» ключ после 30 мин) */
 const EXPAND_URL_CACHE_TTL = Number(
-  process.env.REDIS_EXPAND_URL_TTL_SEC ?? CACHE_REDIS_URL_MAP_TTL_SEC
+  process.env.REDIS_EXPAND_URL_TTL_SEC ?? CACHE_REDIS_URL_MAP_TTL_SEC,
 );
 
 async function rememberCacheUrlMapping(
   originalUrl: string,
-  canonicalUrl: string
+  canonicalUrl: string,
 ): Promise<void> {
   try {
     await connection.setex(
       EXPAND_URL_CACHE_PREFIX + getCacheKey(originalUrl),
       CACHE_REDIS_URL_MAP_TTL_SEC,
-      canonicalUrl
+      canonicalUrl,
     );
   } catch (e) {
     console.warn("Redis: не удалось сохранить соответствие URL для кэша:", e);
+  }
+}
+
+/** Блокируем раскрытие редиректов в локальные/частные адреса (SSRF). */
+function hostnameLooksPrivate(hostname: string): boolean {
+  const h = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  if (h === "localhost" || h.endsWith(".localhost")) return true;
+  const ipv4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h);
+  if (ipv4) {
+    const a = Number(ipv4[1]);
+    const b = Number(ipv4[2]);
+    if (a === 10) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 127) return true;
+    if (a === 0) return true;
+    if (a === 169 && b === 254) return true;
+    if (a === 100 && b >= 64 && b <= 127) return true;
+  }
+  if (h.includes(":")) {
+    if (h === "::1") return true;
+    if (h.startsWith("fe80:")) return true;
+    if (h.startsWith("fc") || h.startsWith("fd")) return true;
+    if (h.startsWith("::ffff:")) {
+      return hostnameLooksPrivate(h.slice(7));
+    }
+  }
+  return false;
+}
+
+function urlHostLooksPrivate(urlStr: string): boolean {
+  try {
+    return hostnameLooksPrivate(new URL(urlStr).hostname);
+  } catch {
+    return true;
   }
 }
 
@@ -250,6 +293,10 @@ async function expandUrl(url: string): Promise<string> {
     url.includes("://t.co/");
 
   if (needsExpand) {
+    if (urlHostLooksPrivate(url)) {
+      console.log(`Expand skipped (unsafe host): ${url}`);
+      return url;
+    }
     const cacheKey = EXPAND_URL_CACHE_PREFIX + getCacheKey(url);
     try {
       const cached = await connection.get(cacheKey);
@@ -275,6 +322,12 @@ async function expandUrl(url: string): Promise<string> {
 
       if (response.ok) {
         const expandedUrl = response.url;
+        if (urlHostLooksPrivate(expandedUrl)) {
+          console.log(
+            `Expand rejected final URL (private/local): ${expandedUrl}`,
+          );
+          return url;
+        }
         console.log(`Expanded to: ${expandedUrl}`);
         try {
           await connection.setex(cacheKey, EXPAND_URL_CACHE_TTL, expandedUrl);
@@ -313,7 +366,7 @@ function run(cmd: string, args: string[]): Promise<void> {
 /** Парсит stderr yt-dlp для прогресса [download] 45.2% и вызывает callback (с троттлингом) */
 function runYtDlpWithProgress(
   args: string[],
-  onProgress?: (percent: number) => void
+  onProgress?: (percent: number) => void,
 ): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     const p = spawn("yt-dlp", args, { stdio: ["ignore", "pipe", "pipe"] });
@@ -330,7 +383,11 @@ function runYtDlpWithProgress(
       if (match) {
         const pct = Math.round(parseFloat(match[1]));
         const now = Date.now();
-        if (pct === 100 || pct - lastReportedPercent >= PROGRESS_THROTTLE_PERCENT || now - lastReportTime > PROGRESS_THROTTLE_MS) {
+        if (
+          pct === 100 ||
+          pct - lastReportedPercent >= PROGRESS_THROTTLE_PERCENT ||
+          now - lastReportTime > PROGRESS_THROTTLE_MS
+        ) {
           lastReportedPercent = pct;
           lastReportTime = now;
           onProgress(pct);
@@ -352,7 +409,7 @@ function runYtDlpWithProgress(
 async function ytDownload(
   url: string,
   outPath: string,
-  onProgress?: (percent: number) => void
+  onProgress?: (percent: number) => void,
 ): Promise<{ type: "video" | "images"; data: string | string[] }> {
   const proxyNames = ["Shadowsocks", "Hysteria2", "VLESS"];
   let lastError: Error | null = null;
@@ -370,9 +427,7 @@ async function ytDownload(
   const argsNoProgress = ["--no-progress", ...baseArgs, url];
 
   const runYtDlp = (args: string[]) =>
-    onProgress
-      ? runYtDlpWithProgress(args, onProgress)
-      : run("yt-dlp", args);
+    onProgress ? runYtDlpWithProgress(args, onProgress) : run("yt-dlp", args);
 
   if (!XRAY_ENABLED || PROXY_LIST.length === 0) {
     console.log("⚠️ Нет доступных прокси, пробуем yt-dlp без прокси...");
@@ -384,7 +439,7 @@ async function ytDownload(
       const detectedPath = resolveDownloadedFile(outPath);
       if (!detectedPath) {
         throw new Error(
-          `yt-dlp не создал файл по пути ${outPath}. Проверьте формат и логи.`
+          `yt-dlp не создал файл по пути ${outPath}. Проверьте формат и логи.`,
         );
       }
       let finalPath = detectedPath;
@@ -395,7 +450,7 @@ async function ytDownload(
         } catch (error) {
           console.warn(
             `Не удалось переименовать ${detectedPath} -> ${outPath}:`,
-            error
+            error,
           );
         }
       }
@@ -407,11 +462,11 @@ async function ytDownload(
       console.log(
         `❌ Прямая загрузка yt-dlp без прокси не сработала: ${errorMsg.substring(
           0,
-          200
-        )}`
+          200,
+        )}`,
       );
       console.log(
-        "Все прямые попытки не сработали, пробуем альтернативные методы..."
+        "Все прямые попытки не сработали, пробуем альтернативные методы...",
       );
       return await tryAlternativeDownload(url, outPath);
     }
@@ -441,7 +496,7 @@ async function ytDownload(
       const detectedPath = resolveDownloadedFile(outPath);
       if (!detectedPath) {
         throw new Error(
-          `yt-dlp не создал файл по пути ${outPath}. Проверьте формат и логи.`
+          `yt-dlp не создал файл по пути ${outPath}. Проверьте формат и логи.`,
         );
       }
       let finalPath = detectedPath;
@@ -452,7 +507,7 @@ async function ytDownload(
         } catch (error) {
           console.warn(
             `Не удалось переименовать ${detectedPath} -> ${outPath}:`,
-            error
+            error,
           );
         }
       }
@@ -472,13 +527,13 @@ async function ytDownload(
 }
 
 const IMAGE_DOWNLOAD_CONCURRENCY = Number(
-  process.env.IMAGE_DOWNLOAD_CONCURRENCY || "8"
+  process.env.IMAGE_DOWNLOAD_CONCURRENCY || "8",
 );
 
 async function downloadSingleImage(
   imageUrl: string,
   index: number,
-  total: number
+  total: number,
 ): Promise<string | null> {
   const imagePath = path.join(TMP_DIR, `image_${index}.jpg`);
   const proxyNames = ["Shadowsocks", "Hysteria2", "VLESS"];
@@ -528,12 +583,12 @@ async function downloadImages(imageUrls: string[]): Promise<string[]> {
   ) {
     const chunk = imageUrls.slice(
       chunkStart,
-      chunkStart + IMAGE_DOWNLOAD_CONCURRENCY
+      chunkStart + IMAGE_DOWNLOAD_CONCURRENCY,
     );
     const results = await Promise.all(
       chunk.map((url, idx) =>
-        downloadSingleImage(url, chunkStart + idx, imageUrls.length)
-      )
+        downloadSingleImage(url, chunkStart + idx, imageUrls.length),
+      ),
     );
     for (let i = 0; i < results.length; i++) {
       downloadedImages[chunkStart + i] = results[i];
@@ -547,7 +602,7 @@ async function sendImagesInBatches(
   chatId: number,
   images: string[],
   messageId: number,
-  ackMessageId: number
+  ackMessageId: number,
 ) {
   const batchSize = 10;
 
@@ -577,7 +632,7 @@ async function sendImagesInBatches(
       }
     } catch (e) {
       console.log(
-        `Failed to send batch ${Math.floor(i / batchSize) + 1}: ${e}`
+        `Failed to send batch ${Math.floor(i / batchSize) + 1}: ${e}`,
       );
     }
   }
@@ -592,11 +647,7 @@ function isTwitterStatusUrl(url: string): boolean {
   try {
     const u = new URL(url);
     const h = u.hostname.replace(/^www\./, "").toLowerCase();
-    if (
-      h !== "twitter.com" &&
-      h !== "x.com" &&
-      h !== "mobile.twitter.com"
-    ) {
+    if (h !== "twitter.com" && h !== "x.com" && h !== "mobile.twitter.com") {
       return false;
     }
     // /user/status/ID и /i/web/status/ID — в pathname всегда есть /status/<digits>
@@ -681,7 +732,7 @@ async function tryTwitterPhotoImageUrls(tweetUrl: string): Promise<string[]> {
 
   try {
     const oembedUrl = `https://publish.twitter.com/oembed?url=${encodeURIComponent(
-      oembedPageUrl
+      oembedPageUrl,
     )}&omit_script=true&dnt=true`;
     const res = await fetch(oembedUrl, {
       headers: { "User-Agent": TWITTER_UA, Accept: "application/json" },
@@ -691,9 +742,7 @@ async function tryTwitterPhotoImageUrls(tweetUrl: string): Promise<string[]> {
       const j = (await res.json()) as { html?: string };
       const imgs = fromHtml(j.html || "");
       if (imgs.length > 0) {
-        console.log(
-          `🐦 Twitter oembed: найдено ${imgs.length} изображений`
-        );
+        console.log(`🐦 Twitter oembed: найдено ${imgs.length} изображений`);
         return imgs;
       }
     }
@@ -725,7 +774,7 @@ async function tryTwitterPhotoImageUrls(tweetUrl: string): Promise<string[]> {
           const imgs = fromHtml(text);
           if (imgs.length > 0) {
             console.log(
-              `🐦 Twitter syndication (HTML): ${imgs.length} изображений`
+              `🐦 Twitter syndication (HTML): ${imgs.length} изображений`,
             );
             return imgs;
           }
@@ -736,7 +785,7 @@ async function tryTwitterPhotoImageUrls(tweetUrl: string): Promise<string[]> {
         if (found.size > 0) {
           const imgs = [...found];
           console.log(
-            `🐦 Twitter syndication JSON: ${imgs.length} изображений`
+            `🐦 Twitter syndication JSON: ${imgs.length} изображений`,
           );
           return imgs;
         }
@@ -760,7 +809,7 @@ function isTikTokPageUrl(url: string): boolean {
 
 async function tryAlternativeDownload(
   url: string,
-  outPath: string
+  outPath: string,
 ): Promise<{ type: "video" | "images"; data: string | string[] }> {
   if (isTwitterStatusUrl(url)) {
     const twImages = await tryTwitterPhotoImageUrls(url);
@@ -768,7 +817,7 @@ async function tryAlternativeDownload(
       return { type: "images", data: twImages };
     }
     console.log(
-      "🐦 Twitter: не удалось получить изображения через oembed/syndication"
+      "🐦 Twitter: не удалось получить изображения через oembed/syndication",
     );
   }
 
@@ -823,7 +872,7 @@ async function tryAlternativeDownload(
 
         if (data.data?.images && Array.isArray(data.data.images)) {
           console.log(
-            `Found photo post with ${data.data.images.length} images`
+            `Found photo post with ${data.data.images.length} images`,
           );
           return { type: "images", data: data.data.images };
         }
@@ -866,7 +915,7 @@ async function tryAlternativeDownload(
 
         if (data.data?.images && Array.isArray(data.data.images)) {
           console.log(
-            `Found photo post with ${data.data.images.length} images`
+            `Found photo post with ${data.data.images.length} images`,
           );
           return { type: "images", data: data.data.images };
         }
@@ -936,7 +985,7 @@ async function downloadVideo(videoUrl: string, outPath: string): Promise<void> {
   throw new Error(
     `Не удалось скачать видео через все прокси. Последняя ошибка: ${
       lastError?.message || "unknown"
-    }`
+    }`,
   );
 }
 
@@ -971,7 +1020,7 @@ async function ffprobeDurationMs(file: string): Promise<number> {
 async function recompressToTarget(
   inFile: string,
   outFile: string,
-  targetBytes: number
+  targetBytes: number,
 ): Promise<void> {
   const durMs = (await ffprobeDurationMs(inFile)) || 1;
 
@@ -984,7 +1033,7 @@ async function recompressToTarget(
   const videoBitrate = Math.max(120_000, totalBitrate - audioK);
 
   console.log(
-    `Recompressing: duration=${durMs}ms, target=${targetBytes}B, videoBitrate=${videoBitrate}`
+    `Recompressing: duration=${durMs}ms, target=${targetBytes}B, videoBitrate=${videoBitrate}`,
   );
 
   const ffmpegPreset = process.env.FFMPEG_PRESET || "veryfast";
@@ -1015,9 +1064,13 @@ async function recompressToTarget(
 
 async function recordStat(payload: any): Promise<void> {
   try {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      "X-Stats-Token": statsIngestSecret,
+    };
     const response = await fetch("http://bot:3000/stats", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify(payload),
     });
     if (!response.ok) {
@@ -1033,7 +1086,7 @@ function buildStatPayload(
   started: number,
   status: string,
   bytes: number,
-  errorMessage?: string
+  errorMessage?: string,
 ) {
   const data = job.data as JobData;
   return {
@@ -1085,9 +1138,7 @@ const worker = new Worker(
           await bot.api.editMessageText(
             chatId,
             ackMessageId,
-            percent < 100
-              ? `Загрузка… ${percent}%`
-              : `Обработка…`
+            percent < 100 ? `Загрузка… ${percent}%` : `Обработка…`,
           );
         } catch {
           /* Игнорируем ошибки редактирования (rate limit и т.п.) */
@@ -1104,17 +1155,19 @@ const worker = new Worker(
         if (downloadedImages.length > 0) {
           const totalBytes = downloadedImages.reduce(
             (sum, img) => sum + statSync(img).size,
-            0
+            0,
           );
 
           await sendImagesInBatches(
             chatId,
             downloadedImages,
             messageId,
-            ackMessageId
+            ackMessageId,
           );
 
-          await recordStat(buildStatPayload(job, started, "success", totalBytes));
+          await recordStat(
+            buildStatPayload(job, started, "success", totalBytes),
+          );
 
           saveImagesToCache(downloadedImages, expandedUrl);
 
@@ -1132,7 +1185,7 @@ const worker = new Worker(
       const videoPath = result.data as string;
       if (!existsSync(videoPath)) {
         throw new Error(
-          `Видео не найдено по пути ${videoPath}. Проверьте лог загрузки.`
+          `Видео не найдено по пути ${videoPath}. Проверьте лог загрузки.`,
         );
       }
       let bytes = statSync(videoPath).size;
@@ -1140,7 +1193,7 @@ const worker = new Worker(
 
       if (bytes > MAX_BYTES) {
         console.log(
-          `File too large (${bytes} > ${MAX_BYTES}), attempting compression...`
+          `File too large (${bytes} > ${MAX_BYTES}), attempting compression...`,
         );
 
         await recompressToTarget(videoPath, out, MAX_BYTES);
@@ -1151,7 +1204,7 @@ const worker = new Worker(
           await bot.api.editMessageText(
             chatId,
             ackMessageId,
-            `❌ Не могу уложиться в ${SIZE_LIMIT_MB} MB даже после сжатия. Попробуйте другую ссылку.`
+            `❌ Не могу уложиться в ${SIZE_LIMIT_MB} MB даже после сжатия. Попробуйте другую ссылку.`,
           );
           await recordStat(buildStatPayload(job, started, "too_large", bytes));
           return;
@@ -1183,7 +1236,8 @@ const worker = new Worker(
     } catch (e: unknown) {
       const err = e instanceof Error ? e : new Error(String(e));
       console.error(`Job ${job.id} failed:`, err);
-      const errorText = `❌ Ошибка: ${err.message}`;
+      const errorText =
+        "❌ Не удалось обработать ссылку. Попробуйте позже или другую публикацию.";
       try {
         await bot.api.editMessageText(chatId, ackMessageId, errorText);
       } catch (editErr: unknown) {
@@ -1193,13 +1247,7 @@ const worker = new Worker(
         }
       }
       await recordStat(
-        buildStatPayload(
-          job,
-          started,
-          "failed",
-          0,
-          err.message.slice(0, 500)
-        )
+        buildStatPayload(job, started, "failed", 0, err.message.slice(0, 500)),
       );
       throw err;
     } finally {
@@ -1214,7 +1262,7 @@ const worker = new Worker(
   {
     connection,
     concurrency: Number(process.env.MAX_CONCURRENCY || "2"),
-  }
+  },
 );
 
 worker.on("failed", (job, err) => {
@@ -1237,5 +1285,5 @@ console.log("🔧 Worker started successfully");
 console.log(`📊 Concurrency: ${process.env.MAX_CONCURRENCY || "2"}`);
 console.log(`📏 Size limit: ${SIZE_LIMIT_MB} MB`);
 console.log(
-  `🌐 Proxies: Shadowsocks=${YTDLP_PROXY_SHADOWSOCKS}, Hysteria2=${YTDLP_PROXY_HYSTERIA2}, VLESS=${YTDLP_PROXY_VLESS}`
+  `🌐 Proxies: Shadowsocks=${YTDLP_PROXY_SHADOWSOCKS}, Hysteria2=${YTDLP_PROXY_HYSTERIA2}, VLESS=${YTDLP_PROXY_VLESS}`,
 );
