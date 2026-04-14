@@ -163,10 +163,18 @@ bot.on("message:text", async (ctx) => {
 
   const jobs = await queue.getJobs(["waiting", "active"]);
   const urlsInQueue = new Set(
-    jobs.map((j) => (j.data as { url?: string })?.url).filter(Boolean),
+    jobs
+      .map((j) => {
+        const d = j.data as { url?: string; chatId?: number };
+        if (!d?.url || d.chatId == null) return null;
+        return `${d.chatId}:${d.url}`;
+      })
+      .filter((k): k is string => k !== null),
   );
 
-  const toAdd = extractedList.filter((e) => !urlsInQueue.has(e.url));
+  const toAdd = extractedList.filter(
+    (e) => !urlsInQueue.has(`${ctx.chat.id}:${e.url}`),
+  );
   const duplicates = extractedList.length - toAdd.length;
 
   if (toAdd.length === 0) {

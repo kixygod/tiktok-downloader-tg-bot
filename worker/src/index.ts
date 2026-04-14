@@ -11,6 +11,7 @@ import {
   renameSync,
   copyFileSync,
   writeFileSync,
+  readFileSync,
 } from "node:fs";
 import path from "node:path";
 import { randomUUID, createHash, createHmac } from "node:crypto";
@@ -65,6 +66,117 @@ function getCachedVideoPath(url: string): string | null {
   } catch {
     return null;
   }
+}
+
+type SharedCacheHit =
+  | { kind: "video"; path: string }
+  | { kind: "images"; paths: string[] };
+
+/** Видео или уже собранный альбом в cache/ по каноническому URL. */
+function probeLocalSharedCache(expandedUrl: string): SharedCacheHit | null {
+  const video = getCachedVideoPath(expandedUrl);
+  if (video) return { kind: "video", path: video };
+
+  const key = getCacheKey(expandedUrl);
+  const dir = path.join(CACHE_DIR, key);
+  const manPath = path.join(dir, "manifest.json");
+  if (!existsSync(manPath)) return null;
+  try {
+    const st = statSync(manPath);
+    if (Date.now() - st.mtimeMs > CACHE_TTL_MS) return null;
+    const m = JSON.parse(readFileSync(manPath, "utf-8")) as {
+      type?: string;
+      count?: number;
+    };
+    if (m.type !== "images" || typeof m.count !== "number" || m.count < 1) {
+      return null;
+    }
+    const paths: string[] = [];
+    for (let i = 0; i < m.count; i++) {
+      const fp = path.join(dir, `${i}.jpg`);
+      if (!existsSync(fp)) return null;
+      paths.push(fp);
+    }
+    return { kind: "images", paths };
+  } catch {
+    return null;
+  }
+}
+
+const DOWNLOAD_LOCK_PREFIX = "worker:video_dl:";
+const DOWNLOAD_LOCK_TTL_SEC = Number(
+  process.env.DOWNLOAD_LOCK_TTL_SEC || "900",
+);
+const DOWNLOAD_LOCK_MAX_SPINS = Number(
+  process.env.DOWNLOAD_LOCK_MAX_SPINS || "500",
+);
+
+async function releaseDownloadLock(
+  lockKey: string,
+  token: string,
+): Promise<void> {
+  const script = `
+    if redis.call("get", KEYS[1]) == ARGV[1] then
+      return redis.call("del", KEYS[1])
+    else
+      return 0
+    end
+  `;
+  try {
+    await connection.eval(script, 1, lockKey, token);
+  } catch (e) {
+    console.warn("Redis: не удалось снять блокировку загрузки:", e);
+  }
+}
+
+/**
+ * Ждём, пока лидер допишет кэш; если lock исчез без результата — retry (другой джоб
+ * упал или срок lock истёк).
+ */
+async function waitPeerDownload(
+  expandedUrl: string,
+  lockKey: string,
+  maxWaitMs: number,
+): Promise<SharedCacheHit | "retry"> {
+  const deadline = Date.now() + maxWaitMs;
+  while (Date.now() < deadline) {
+    const hit = probeLocalSharedCache(expandedUrl);
+    if (hit) return hit;
+    if ((await connection.exists(lockKey)) !== 1) {
+      const hit2 = probeLocalSharedCache(expandedUrl);
+      if (hit2) return hit2;
+      return "retry";
+    }
+    await sleep(250);
+  }
+  const hit3 = probeLocalSharedCache(expandedUrl);
+  if (hit3) return hit3;
+  return "retry";
+}
+
+async function serveFromSharedCache(
+  hit: SharedCacheHit,
+  job: Job,
+  started: number,
+  chatId: number,
+  messageId: number,
+  ackMessageId: number,
+): Promise<void> {
+  if (hit.kind === "video") {
+    console.log(`📦 Кэш-хит, используем сохранённое видео`);
+    const bytes = statSync(hit.path).size;
+    await bot.api.sendChatAction(chatId, "upload_video");
+    await bot.api.sendVideo(chatId, new InputFile(hit.path), {
+      reply_to_message_id: messageId,
+    });
+    await bot.api.deleteMessage(chatId, ackMessageId).catch(() => {});
+    await recordStat(buildStatPayload(job, started, "cached", bytes));
+    return;
+  }
+  console.log(`📦 Кэш-хит (альбом, ${hit.paths.length} фото)`);
+  const totalBytes = hit.paths.reduce((sum, p) => sum + statSync(p).size, 0);
+  await sendImagesInBatches(chatId, hit.paths, messageId, ackMessageId);
+  await recordStat(buildStatPayload(job, started, "cached", totalBytes));
 }
 
 function saveToCache(sourcePath: string, url: string): void {
@@ -1120,119 +1232,193 @@ const worker = new Worker(
       const expandedUrl = await expandUrl(url);
       await rememberCacheUrlMapping(url, expandedUrl);
 
-      const cachedPath = getCachedVideoPath(expandedUrl);
-      if (cachedPath) {
-        console.log(`📦 Кэш-хит, используем сохранённое видео`);
-        const bytes = statSync(cachedPath).size;
-        await bot.api.sendChatAction(chatId, "upload_video");
-        await bot.api.sendVideo(chatId, new InputFile(cachedPath), {
-          reply_to_message_id: messageId,
-        });
-        await bot.api.deleteMessage(chatId, ackMessageId).catch(() => {});
-        await recordStat(buildStatPayload(job, started, "cached", bytes));
+      const shared0 = probeLocalSharedCache(expandedUrl);
+      if (shared0) {
+        await serveFromSharedCache(
+          shared0,
+          job,
+          started,
+          chatId,
+          messageId,
+          ackMessageId,
+        );
         return;
       }
 
-      const progressCallback = async (percent: number) => {
-        try {
-          await bot.api.editMessageText(
+      const lockKey = DOWNLOAD_LOCK_PREFIX + getCacheKey(expandedUrl);
+      const token = randomUUID();
+
+      for (let spin = 0; spin < DOWNLOAD_LOCK_MAX_SPINS; spin++) {
+        const sharedSpin = probeLocalSharedCache(expandedUrl);
+        if (sharedSpin) {
+          await serveFromSharedCache(
+            sharedSpin,
+            job,
+            started,
             chatId,
-            ackMessageId,
-            percent < 100 ? `Загрузка… ${percent}%` : `Обработка…`,
-          );
-        } catch {
-          /* Игнорируем ошибки редактирования (rate limit и т.п.) */
-        }
-      };
-
-      const result = await ytDownload(expandedUrl, raw, progressCallback);
-
-      if (result.type === "images") {
-        console.log(`Processing photo post with ${result.data.length} images`);
-        const imageUrls = result.data as string[];
-        const downloadedImages = await downloadImages(imageUrls);
-
-        if (downloadedImages.length > 0) {
-          const totalBytes = downloadedImages.reduce(
-            (sum, img) => sum + statSync(img).size,
-            0,
-          );
-
-          await sendImagesInBatches(
-            chatId,
-            downloadedImages,
             messageId,
             ackMessageId,
           );
-
-          await recordStat(
-            buildStatPayload(job, started, "success", totalBytes),
-          );
-
-          saveImagesToCache(downloadedImages, expandedUrl);
-
-          downloadedImages.forEach((img) => {
-            try {
-              rmSync(img, { force: true });
-            } catch {}
-          });
           return;
-        } else {
-          throw new Error("Failed to download any images");
         }
-      }
 
-      const videoPath = result.data as string;
-      if (!existsSync(videoPath)) {
-        throw new Error(
-          `Видео не найдено по пути ${videoPath}. Проверьте лог загрузки.`,
+        const acquired = await connection.set(
+          lockKey,
+          token,
+          "EX",
+          DOWNLOAD_LOCK_TTL_SEC,
+          "NX",
         );
-      }
-      let bytes = statSync(videoPath).size;
-      console.log(`Downloaded ${bytes} bytes`);
-
-      if (bytes > MAX_BYTES) {
-        console.log(
-          `File too large (${bytes} > ${MAX_BYTES}), attempting compression...`,
-        );
-
-        await recompressToTarget(videoPath, out, MAX_BYTES);
-        bytes = statSync(out).size;
-        console.log(`After compression: ${bytes} bytes`);
-
-        if (bytes > MAX_BYTES) {
-          await bot.api.editMessageText(
-            chatId,
-            ackMessageId,
-            `❌ Не могу уложиться в ${SIZE_LIMIT_MB} MB даже после сжатия. Попробуйте другую ссылку.`,
+        if (acquired !== "OK") {
+          const w = await waitPeerDownload(
+            expandedUrl,
+            lockKey,
+            DOWNLOAD_LOCK_TTL_SEC * 1000,
           );
-          await recordStat(buildStatPayload(job, started, "too_large", bytes));
-          return;
+          if (w !== "retry") {
+            await serveFromSharedCache(
+              w,
+              job,
+              started,
+              chatId,
+              messageId,
+              ackMessageId,
+            );
+            return;
+          }
+          await sleep(100 + Math.floor(Math.random() * 120));
+          continue;
         }
 
         try {
-          rmSync(videoPath, { force: true });
-        } catch {}
+          const sharedInside = probeLocalSharedCache(expandedUrl);
+          if (sharedInside) {
+            await serveFromSharedCache(
+              sharedInside,
+              job,
+              started,
+              chatId,
+              messageId,
+              ackMessageId,
+            );
+            return;
+          }
 
-        await bot.api.sendChatAction(chatId, "upload_video");
-        await bot.api.sendVideo(chatId, new InputFile(out), {
-          reply_to_message_id: messageId,
-        });
-        await bot.api.deleteMessage(chatId, ackMessageId).catch(() => {});
+          const progressCallback = async (percent: number) => {
+            try {
+              await bot.api.editMessageText(
+                chatId,
+                ackMessageId,
+                percent < 100 ? `Загрузка… ${percent}%` : `Обработка…`,
+              );
+            } catch {
+              /* Игнорируем ошибки редактирования (rate limit и т.п.) */
+            }
+          };
 
-        saveToCache(out, expandedUrl);
-        await recordStat(buildStatPayload(job, started, "compressed", bytes));
-        return;
+          const result = await ytDownload(expandedUrl, raw, progressCallback);
+
+          if (result.type === "images") {
+            console.log(
+              `Processing photo post with ${result.data.length} images`,
+            );
+            const imageUrls = result.data as string[];
+            const downloadedImages = await downloadImages(imageUrls);
+
+            if (downloadedImages.length > 0) {
+              const totalBytes = downloadedImages.reduce(
+                (sum, img) => sum + statSync(img).size,
+                0,
+              );
+
+              await sendImagesInBatches(
+                chatId,
+                downloadedImages,
+                messageId,
+                ackMessageId,
+              );
+
+              await recordStat(
+                buildStatPayload(job, started, "success", totalBytes),
+              );
+
+              saveImagesToCache(downloadedImages, expandedUrl);
+
+              downloadedImages.forEach((img) => {
+                try {
+                  rmSync(img, { force: true });
+                } catch {}
+              });
+              return;
+            } else {
+              throw new Error("Failed to download any images");
+            }
+          }
+
+          const videoPath = result.data as string;
+          if (!existsSync(videoPath)) {
+            throw new Error(
+              `Видео не найдено по пути ${videoPath}. Проверьте лог загрузки.`,
+            );
+          }
+          let bytes = statSync(videoPath).size;
+          console.log(`Downloaded ${bytes} bytes`);
+
+          if (bytes > MAX_BYTES) {
+            console.log(
+              `File too large (${bytes} > ${MAX_BYTES}), attempting compression...`,
+            );
+
+            await recompressToTarget(videoPath, out, MAX_BYTES);
+            bytes = statSync(out).size;
+            console.log(`After compression: ${bytes} bytes`);
+
+            if (bytes > MAX_BYTES) {
+              await bot.api.editMessageText(
+                chatId,
+                ackMessageId,
+                `❌ Не могу уложиться в ${SIZE_LIMIT_MB} MB даже после сжатия. Попробуйте другую ссылку.`,
+              );
+              await recordStat(
+                buildStatPayload(job, started, "too_large", bytes),
+              );
+              return;
+            }
+
+            try {
+              rmSync(videoPath, { force: true });
+            } catch {}
+
+            await bot.api.sendChatAction(chatId, "upload_video");
+            await bot.api.sendVideo(chatId, new InputFile(out), {
+              reply_to_message_id: messageId,
+            });
+            await bot.api.deleteMessage(chatId, ackMessageId).catch(() => {});
+
+            saveToCache(out, expandedUrl);
+            await recordStat(
+              buildStatPayload(job, started, "compressed", bytes),
+            );
+            return;
+          }
+
+          await bot.api.sendChatAction(chatId, "upload_video");
+          await bot.api.sendVideo(chatId, new InputFile(videoPath), {
+            reply_to_message_id: messageId,
+          });
+          await bot.api.deleteMessage(chatId, ackMessageId).catch(() => {});
+
+          saveToCache(videoPath, expandedUrl);
+          await recordStat(buildStatPayload(job, started, "success", bytes));
+          return;
+        } finally {
+          await releaseDownloadLock(lockKey, token);
+        }
       }
 
-      await bot.api.sendChatAction(chatId, "upload_video");
-      await bot.api.sendVideo(chatId, new InputFile(videoPath), {
-        reply_to_message_id: messageId,
-      });
-      await bot.api.deleteMessage(chatId, ackMessageId).catch(() => {});
-
-      saveToCache(videoPath, expandedUrl);
-      await recordStat(buildStatPayload(job, started, "success", bytes));
+      throw new Error(
+        "Не удалось дождаться результата загрузки (превышено число повторов)",
+      );
     } catch (e: unknown) {
       const err = e instanceof Error ? e : new Error(String(e));
       console.error(`Job ${job.id} failed:`, err);
