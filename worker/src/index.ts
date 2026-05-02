@@ -25,6 +25,13 @@ const connection = new IORedis(redisUrl, {
 });
 const bot = new Bot(process.env.TELEGRAM_BOT_TOKEN!);
 
+class NonRetryableDownloadError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "NonRetryableDownloadError";
+  }
+}
+
 function deriveStatsIngestSecret(botToken: string): string {
   return createHmac("sha256", botToken)
     .update("tiktok-bot:stats-ingest:v1")
@@ -919,6 +926,177 @@ function isTikTokPageUrl(url: string): boolean {
   );
 }
 
+const INSTAGRAM_UA =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+
+function isInstagramPageUrl(url: string): boolean {
+  try {
+    const h = new URL(url).hostname.replace(/^www\./, "").toLowerCase();
+    return h === "instagram.com";
+  } catch {
+    return false;
+  }
+}
+
+function instagramShortcodeFromUrl(url: string): string | null {
+  try {
+    const u = new URL(url);
+    const m = u.pathname.match(/\/(?:p|reel|tv)\/([^/?#]+)/i);
+    return m ? m[1] : null;
+  } catch {
+    return null;
+  }
+}
+
+function instagramEmbedCandidateUrls(pageUrl: string, shortcode: string): string[] {
+  let pathname = "";
+  try {
+    pathname = new URL(pageUrl).pathname.toLowerCase();
+  } catch {
+    pathname = "";
+  }
+  const embed = (kind: "p" | "reel" | "tv") =>
+    `https://www.instagram.com/${kind}/${shortcode}/embed/`;
+  const ordered: string[] = [];
+  if (pathname.includes("/reel/")) {
+    ordered.push(embed("reel"), embed("p"));
+  } else if (pathname.includes("/tv/")) {
+    ordered.push(embed("tv"), embed("p"));
+  } else {
+    ordered.push(embed("p"), embed("reel"));
+  }
+  return [...new Set(ordered)];
+}
+
+/** Парсинг video_url из публичной embed-страницы (без cookies). */
+function parseInstagramVideoUrlsFromEmbedHtml(html: string): string[] {
+  const re = /"video_url"\s*:\s*"((?:\\.|[^"\\])*)"/g;
+  const found: string[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html)) !== null) {
+    const raw = m[1];
+    const u = raw
+      .replace(/\\\//g, "/")
+      .replace(/\\"/g, '"')
+      .replace(/\\n/g, "\n")
+      .replace(/\\u0026/g, "&");
+    if (u.startsWith("http://") || u.startsWith("https://")) found.push(u);
+  }
+  return [...new Set(found)];
+}
+
+/** Резервный парсинг любых прямых mp4 ссылок из HTML. */
+function parseMp4UrlsFromHtml(html: string): string[] {
+  const re = /https?:\/\/[^"'\s<>\\]+?\.mp4(?:\?[^"'\s<>\\]*)?/gi;
+  const found = new Set<string>();
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html)) !== null) {
+    const raw = m[0]
+      .replace(/&amp;/g, "&")
+      .replace(/\\u0026/g, "&")
+      .replace(/\\\//g, "/");
+    found.add(raw);
+  }
+  return [...found];
+}
+
+/**
+ * Если yt-dlp не смог, пробуем вытащить прямой CDN URL из HTML embed.
+ * Работает только для публичных постов, когда Meta отдаёт embed без логина.
+ */
+async function tryInstagramPublicEmbed(
+  pageUrl: string,
+  outPath: string,
+): Promise<{ type: "video"; data: string } | null> {
+  const shortcode = instagramShortcodeFromUrl(pageUrl);
+  if (!shortcode) return null;
+
+  for (const embedUrl of instagramEmbedCandidateUrls(pageUrl, shortcode)) {
+    try {
+      const res = await fetch(embedUrl, {
+        headers: {
+          "User-Agent": INSTAGRAM_UA,
+          Accept: "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
+          "Accept-Language": "en-US,en;q=0.9",
+        },
+        redirect: "follow",
+        signal: AbortSignal.timeout(20000),
+      });
+      if (!res.ok) continue;
+      const html = await res.text();
+      const videoUrls = parseInstagramVideoUrlsFromEmbedHtml(html);
+      for (const vu of videoUrls) {
+        try {
+          await downloadVideo(vu, outPath);
+          if (existsSync(outPath) && statSync(outPath).size > 0) {
+            console.log("✅ Instagram: скачано через публичный embed");
+            return { type: "video", data: outPath };
+          }
+        } catch {
+          /* следующий URL */
+        }
+      }
+    } catch (e) {
+      console.log(`Instagram embed не сработал (${embedUrl}): ${e}`);
+    }
+  }
+  return null;
+}
+
+/**
+ * Дополнительный fallback без cookies через публичные зеркала Instagram.
+ * Может сработать, когда официальный embed/yt-dlp режется по IP.
+ */
+async function tryInstagramMirrorSources(
+  pageUrl: string,
+  outPath: string,
+): Promise<{ type: "video"; data: string } | null> {
+  const shortcode = instagramShortcodeFromUrl(pageUrl);
+  if (!shortcode) return null;
+
+  const mirrorUrls = [
+    `https://www.ddinstagram.com/p/${shortcode}/`,
+    `https://www.ddinstagram.com/reel/${shortcode}/`,
+    `https://ddinstagram.com/p/${shortcode}/`,
+    `https://ddinstagram.com/reel/${shortcode}/`,
+  ];
+
+  for (const mirrorUrl of mirrorUrls) {
+    try {
+      const res = await fetch(mirrorUrl, {
+        headers: {
+          "User-Agent": INSTAGRAM_UA,
+          Accept: "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
+          "Accept-Language": "en-US,en;q=0.9",
+        },
+        redirect: "follow",
+        signal: AbortSignal.timeout(20000),
+      });
+      if (!res.ok) continue;
+      const html = await res.text();
+      const candidates = [
+        ...parseInstagramVideoUrlsFromEmbedHtml(html),
+        ...parseMp4UrlsFromHtml(html),
+      ];
+      for (const vu of [...new Set(candidates)]) {
+        try {
+          await downloadVideo(vu, outPath);
+          if (existsSync(outPath) && statSync(outPath).size > 0) {
+            console.log(`✅ Instagram: скачано через mirror (${mirrorUrl})`);
+            return { type: "video", data: outPath };
+          }
+        } catch {
+          /* пробуем следующую ссылку */
+        }
+      }
+    } catch (e) {
+      console.log(`Instagram mirror не сработал (${mirrorUrl}): ${e}`);
+    }
+  }
+
+  return null;
+}
+
 async function tryAlternativeDownload(
   url: string,
   outPath: string,
@@ -930,6 +1108,19 @@ async function tryAlternativeDownload(
     }
     console.log(
       "🐦 Twitter: не удалось получить изображения через oembed/syndication",
+    );
+  }
+
+  if (isInstagramPageUrl(url)) {
+    const ig = await tryInstagramPublicEmbed(url, outPath);
+    if (ig) return ig;
+    const igMirror = await tryInstagramMirrorSources(url, outPath);
+    if (igMirror) return igMirror;
+    console.log(
+      "Instagram: embed не дал video_url (приватный пост, блок IP или только фото)",
+    );
+    throw new NonRetryableDownloadError(
+      "Instagram сейчас не отдал медиа без авторизации (rate-limit / блок IP / приватный пост).",
     );
   }
 
@@ -1435,6 +1626,10 @@ const worker = new Worker(
       await recordStat(
         buildStatPayload(job, started, "failed", 0, err.message.slice(0, 500)),
       );
+      if (err instanceof NonRetryableDownloadError) {
+        console.log(`⛔ Без повторов: ${err.message}`);
+        return;
+      }
       throw err;
     } finally {
       try {

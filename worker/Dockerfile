@@ -1,7 +1,8 @@
 FROM node:20-alpine
 
-# Установка yt-dlp и ffmpeg
-RUN apk add --no-cache yt-dlp ffmpeg python3 make g++ curl
+# ffmpeg + свежий yt-dlp из pip (в apk часто отстаёт; для Instagram это критично)
+RUN apk add --no-cache ffmpeg python3 py3-pip ca-certificates make g++ curl \
+  && pip install --no-cache-dir --break-system-packages -U "yt-dlp[default]"
 
 WORKDIR /app
 
