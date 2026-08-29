@@ -23,6 +23,7 @@ import {
   parseTikTokImageUrlsFromHtml,
   tiktokPhotoCandidatePages,
 } from "./tiktokPhotos";
+import { isYouTubeUrl, ytdlpFormatArgs } from "./ytdlpFormat";
 
 const redisUrl = process.env.REDIS_URL!;
 const queueName = process.env.QUEUE_NAME || "tiktok";
@@ -551,8 +552,7 @@ async function ytDownload(
   let lastError: Error | null = null;
 
   const baseArgs = [
-    "-f",
-    "best[ext=mp4][vcodec^=avc1]/best[ext=mp4]/best",
+    ...ytdlpFormatArgs(url),
     "--no-warnings",
     "--restrict-filenames",
     "--no-playlist",
@@ -1151,6 +1151,12 @@ async function tryAlternativeDownload(
   url: string,
   outPath: string,
 ): Promise<{ type: "video" | "images"; data: string | string[] }> {
+  if (isYouTubeUrl(url)) {
+    throw new Error(
+      "YouTube: не удалось скачать Shorts (нет подходящего формата или блок IP).",
+    );
+  }
+
   if (isTwitterStatusUrl(url)) {
     const twImages = await tryTwitterPhotoImageUrls(url);
     if (twImages.length > 0) {
