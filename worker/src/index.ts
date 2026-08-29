@@ -17,6 +17,12 @@ import path from "node:path";
 import { randomUUID, createHash, createHmac } from "node:crypto";
 import { Bot, InputFile } from "grammy";
 import { setTimeout as sleep } from "node:timers/promises";
+import {
+  TIKTOK_WEB_UA,
+  isTikTokPhotoUrl,
+  parseTikTokImageUrlsFromHtml,
+  tiktokPhotoCandidatePages,
+} from "./tiktokPhotos";
 
 const redisUrl = process.env.REDIS_URL!;
 const queueName = process.env.QUEUE_NAME || "tiktok";
@@ -530,6 +536,17 @@ async function ytDownload(
   outPath: string,
   onProgress?: (percent: number) => void,
 ): Promise<{ type: "video" | "images"; data: string | string[] }> {
+  if (isTikTokPageUrl(url) && isTikTokPhotoUrl(url)) {
+    const photoUrls = await tryTikTokPhotoImages(url);
+    if (photoUrls.length > 0) {
+      return { type: "images", data: photoUrls };
+    }
+    console.log(
+      "TikTok /photo/: embed не дал картинки, идём в альтернативные методы...",
+    );
+    return await tryAlternativeDownload(url, outPath);
+  }
+
   const proxyNames = ["Shadowsocks", "Hysteria2", "VLESS"];
   let lastError: Error | null = null;
 
@@ -646,7 +663,7 @@ async function ytDownload(
 }
 
 const IMAGE_DOWNLOAD_CONCURRENCY = Number(
-  process.env.IMAGE_DOWNLOAD_CONCURRENCY || "8",
+  process.env.IMAGE_DOWNLOAD_CONCURRENCY || "3",
 );
 
 async function downloadSingleImage(
@@ -654,7 +671,7 @@ async function downloadSingleImage(
   index: number,
   total: number,
 ): Promise<string | null> {
-  const imagePath = path.join(TMP_DIR, `image_${index}.jpg`);
+  const imagePath = path.join(TMP_DIR, `image_${randomUUID()}_${index}.jpg`);
   const proxyNames = ["Shadowsocks", "Hysteria2", "VLESS"];
 
   // Сначала пробуем без прокси (быстрее на VPS без блокировок)
@@ -926,6 +943,39 @@ function isTikTokPageUrl(url: string): boolean {
   );
 }
 
+/** Карусели /photo/: yt-dlp их не качает, берём CDN URL из embed HTML. */
+async function tryTikTokPhotoImages(pageUrl: string): Promise<string[]> {
+  const pages = tiktokPhotoCandidatePages(pageUrl);
+  for (const page of pages) {
+    try {
+      const res = await fetch(page, {
+        headers: {
+          "User-Agent": TIKTOK_WEB_UA,
+          Accept: "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
+          "Accept-Language": "en-US,en;q=0.9",
+          Referer: "https://www.tiktok.com/",
+        },
+        redirect: "follow",
+        signal: AbortSignal.timeout(20000),
+      });
+      if (!res.ok) {
+        console.log(`TikTok photo page HTTP ${res.status}: ${page}`);
+        continue;
+      }
+      const html = await res.text();
+      const imgs = parseTikTokImageUrlsFromHtml(html);
+      if (imgs.length > 0) {
+        console.log(`🖼 TikTok photo: ${imgs.length} изображений (${page})`);
+        return imgs;
+      }
+      console.log(`TikTok photo: в HTML нет слайдов (${page}, ${html.length} B)`);
+    } catch (e) {
+      console.log(`TikTok photo fetch failed (${page}): ${e}`);
+    }
+  }
+  return [];
+}
+
 const INSTAGRAM_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
@@ -1128,6 +1178,11 @@ async function tryAlternativeDownload(
     throw new Error("All download methods failed");
   }
 
+  const tiktokPhotos = await tryTikTokPhotoImages(url);
+  if (tiktokPhotos.length > 0) {
+    return { type: "images", data: tiktokPhotos };
+  }
+
   const services = [
     `https://tikwm.com/api/?url=${encodeURIComponent(url)}`,
     `https://api.tikmate.app/api/lookup?id=${
@@ -1173,7 +1228,11 @@ async function tryAlternativeDownload(
         const data = JSON.parse(curlOutput) as any;
         serviceSuccess = true;
 
-        if (data.data?.images && Array.isArray(data.data.images)) {
+        if (
+          data.data?.images &&
+          Array.isArray(data.data.images) &&
+          data.data.images.length > 0
+        ) {
           console.log(
             `Found photo post with ${data.data.images.length} images`,
           );
@@ -1212,11 +1271,20 @@ async function tryAlternativeDownload(
           signal: AbortSignal.timeout(15000),
         });
 
-        if (!response.ok) continue;
+        if (!response.ok) {
+          console.log(
+            `Service failed без прокси: HTTP ${response.status} ${serviceUrl}`,
+          );
+          continue;
+        }
 
         const data = (await response.json()) as any;
 
-        if (data.data?.images && Array.isArray(data.data.images)) {
+        if (
+          data.data?.images &&
+          Array.isArray(data.data.images) &&
+          data.data.images.length > 0
+        ) {
           console.log(
             `Found photo post with ${data.data.images.length} images`,
           );
@@ -1340,10 +1408,15 @@ async function recompressToTarget(
   );
 
   const ffmpegPreset = process.env.FFMPEG_PRESET || "veryfast";
+  const ffmpegThreads = process.env.FFMPEG_THREADS || "1";
   const args = [
     "-y",
     "-i",
     inFile,
+    "-threads",
+    ffmpegThreads,
+    "-filter_threads",
+    ffmpegThreads,
     "-c:v",
     "libx264",
     "-preset",
@@ -1642,7 +1715,7 @@ const worker = new Worker(
   },
   {
     connection,
-    concurrency: Number(process.env.MAX_CONCURRENCY || "2"),
+    concurrency: Number(process.env.MAX_CONCURRENCY || "1"),
   },
 );
 
@@ -1663,7 +1736,7 @@ const CACHE_CLEANUP_INTERVAL_MS =
   Number(process.env.CACHE_CLEANUP_INTERVAL_MINUTES || "60") * 60 * 1000;
 setInterval(cleanCacheOnStartup, CACHE_CLEANUP_INTERVAL_MS);
 console.log("🔧 Worker started successfully");
-console.log(`📊 Concurrency: ${process.env.MAX_CONCURRENCY || "2"}`);
+console.log(`📊 Concurrency: ${process.env.MAX_CONCURRENCY || "1"}`);
 console.log(`📏 Size limit: ${SIZE_LIMIT_MB} MB`);
 console.log(
   `🌐 Proxies: Shadowsocks=${YTDLP_PROXY_SHADOWSOCKS}, Hysteria2=${YTDLP_PROXY_HYSTERIA2}, VLESS=${YTDLP_PROXY_VLESS}`,

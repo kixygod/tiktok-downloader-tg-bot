@@ -10,6 +10,14 @@ describe("extractSupportedUrls", () => {
     expect(result[0].platform).toBe("tiktok");
   });
 
+  it("извлекает TikTok photo-карусели", () => {
+    const text = "https://www.tiktok.com/@user/photo/7662829044961938710";
+    const result = extractSupportedUrls(text);
+    expect(result).toHaveLength(1);
+    expect(result[0].platform).toBe("tiktok");
+    expect(result[0].url).toContain("/photo/");
+  });
+
   it("извлекает короткие TikTok ссылки vm.tiktok.com", () => {
     const text = "https://vm.tiktok.com/abc123/";
     const result = extractSupportedUrls(text);
