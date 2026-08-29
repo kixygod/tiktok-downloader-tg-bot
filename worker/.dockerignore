@@ -13,3 +13,5 @@ coverage
 *.swo
 .DS_Store
 dist
+src/__tests__
+vitest.config.ts
