@@ -62,6 +62,7 @@ import {
 import { parseDashboardBasicAuth, timingSafeEqualUtf8 } from "./utils";
 import type { StatsBody } from "./types";
 import { initDB, pool, startJobsRetentionSchedule } from "./db";
+import { insertStat } from "./stats";
 import { extractSupportedUrls } from "./urls";
 import { handleAdminCommand, isAdmin } from "./admin";
 import {
@@ -434,6 +435,7 @@ async function startServer() {
       username: { type: ["string", "null"], maxLength: 256 },
       first_name: { type: ["string", "null"], maxLength: 256 },
       platform: { type: ["string", "null"], maxLength: 64 },
+      event_id: { type: "string", maxLength: 64 },
       error_message: { type: ["string", "null"], maxLength: 1000 },
     },
     additionalProperties: false,
@@ -447,37 +449,7 @@ async function startServer() {
     },
     async (request) => {
       const body = request.body as StatsBody;
-      const {
-        ts,
-        url,
-        status,
-        bytes,
-        duration_ms,
-        chat_id,
-        user_id,
-        username,
-        first_name,
-        platform,
-        error_message,
-      } = body;
-
-      await pool.query(
-        `INSERT INTO jobs (ts, url, chat_id, user_id, username, first_name, platform, status, bytes, duration_ms, error_message)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
-        [
-          ts,
-          url,
-          chat_id,
-          user_id ?? null,
-          username ?? null,
-          first_name ?? null,
-          platform ?? null,
-          status,
-          bytes,
-          duration_ms,
-          error_message ?? null,
-        ],
-      );
+      await insertStat(body);
 
       return { ok: true };
     },

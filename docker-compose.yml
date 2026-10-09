@@ -131,6 +131,8 @@ services:
       FFMPEG_THREADS: ${FFMPEG_THREADS:-1}
       NODE_OPTIONS: ${WORKER_NODE_OPTIONS:---max-old-space-size=128}
       CACHE_CLEANUP_INTERVAL_MINUTES: ${CACHE_CLEANUP_INTERVAL_MINUTES:-60}
+      PROCESS_TIMEOUT_MS: ${PROCESS_TIMEOUT_MS:-180000}
+      YTDLP_COOKIES_FILE: ${YTDLP_COOKIES_FILE:-}
       IMAGE_DOWNLOAD_CONCURRENCY: ${IMAGE_DOWNLOAD_CONCURRENCY:-3}
       # Прокси для ytdlp/ffmpeg/любых http-клиентов (fallback на VLESS)
       HTTP_PROXY: ${XRAY_HTTP_PROXY}
@@ -145,6 +147,7 @@ services:
       REDIS_EXPAND_URL_TTL_SEC: ${REDIS_EXPAND_URL_TTL_SEC:-86400}
     volumes:
       - tmp_data:/tmp/downloads
+      - ./worker/cookies:/app/cookies:ro
     depends_on: [redis]
     networks: [app]
     restart: unless-stopped

@@ -22,6 +22,7 @@ export interface JobData {
 
 /** Тело POST /stats */
 export interface StatsBody {
+  event_id?: string;
   ts: number;
   url: string;
   status: "success" | "failed" | "cached" | "compressed" | "too_large";

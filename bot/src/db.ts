@@ -2,6 +2,8 @@ import { Pool } from "pg";
 
 export const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
+pool.on("error", (error) => { console.error("PostgreSQL idle connection error:", error.message); });
+
 export async function initDB(): Promise<void> {
   const MAX_RETRIES = 20;
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
@@ -30,6 +32,8 @@ export async function initDB(): Promise<void> {
         CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs (created_at);
         CREATE INDEX IF NOT EXISTS idx_jobs_ts_status ON jobs (ts, status);
       `);
+      await pool.query("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS event_id TEXT");
+      await pool.query("CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS idx_jobs_event_id ON jobs (event_id)");
       console.log("✅ PostgreSQL tables initialized");
       return;
     } catch (err: unknown) {

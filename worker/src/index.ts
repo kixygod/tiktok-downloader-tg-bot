@@ -1,7 +1,9 @@
 import { Worker, Job } from "bullmq";
 import IORedis from "ioredis";
 import type { JobData } from "./types";
-import { spawn } from "node:child_process";
+import { runProcess } from "./process";
+import { canonicalMediaUrl, failureDecision, redact } from "./reliability";
+import { Journal, StatsOutbox } from "./journal";
 import {
   statSync,
   rmSync,
@@ -12,6 +14,7 @@ import {
   copyFileSync,
   writeFileSync,
   readFileSync,
+  chmodSync,
 } from "node:fs";
 import path from "node:path";
 import { randomUUID, createHash, createHmac } from "node:crypto";
@@ -24,6 +27,8 @@ import {
   tiktokPhotoCandidatePages,
 } from "./tiktokPhotos";
 import { isYouTubeUrl, ytdlpFormatArgs } from "./ytdlpFormat";
+import { tikTokFallbackRequests, parseTikTokFallbackMedia, fetchSssTikMedia } from "./tiktokFallback";
+import { normalizeImageForTelegram } from "./images";
 
 const redisUrl = process.env.REDIS_URL!;
 const queueName = process.env.QUEUE_NAME || "tiktok";
@@ -53,6 +58,7 @@ const MAX_BYTES = SIZE_LIMIT_MB * 1024 * 1024;
 
 const TMP_DIR = "/tmp/downloads";
 const CACHE_DIR = path.join(TMP_DIR, "cache");
+const journal = new Journal(path.join(TMP_DIR, "journal"));
 const CACHE_TTL_MS = 24 * 3600 * 1000;
 /** Redis: оригинальная ссылка из джобы → URL, по которому лежит кэш (как долго живут .mp4 в cache/) */
 const CACHE_REDIS_URL_MAP_TTL_SEC = Math.ceil(CACHE_TTL_MS / 1000);
@@ -179,7 +185,7 @@ async function serveFromSharedCache(
   if (hit.kind === "video") {
     console.log(`📦 Кэш-хит, используем сохранённое видео`);
     const bytes = statSync(hit.path).size;
-    await bot.api.sendChatAction(chatId, "upload_video");
+    await bot.api.sendChatAction(chatId, "upload_video").catch(() => {});
     await bot.api.sendVideo(chatId, new InputFile(hit.path), {
       reply_to_message_id: messageId,
     });
@@ -229,6 +235,13 @@ function saveImagesToCache(imagePaths: string[], expandedUrl: string): void {
 
 function cleanCacheOnStartup(): void {
   try {
+    const jobsDir = path.join(TMP_DIR, "jobs");
+    if (existsSync(jobsDir)) {
+      for (const name of readdirSync(jobsDir)) {
+        const dir = path.join(jobsDir, name);
+        if (Date.now() - statSync(dir).mtimeMs > CACHE_TTL_MS) rmSync(dir, { recursive: true, force: true });
+      }
+    }
     const files = readdirSync(CACHE_DIR);
     const now = Date.now();
     let removed = 0;
@@ -428,7 +441,7 @@ async function expandUrl(url: string): Promise<string> {
       const cached = await connection.get(cacheKey);
       if (cached) {
         console.log(`Expand URL cache hit: ${url} -> ${cached}`);
-        return cached;
+        return canonicalMediaUrl(cached);
       }
     } catch (e) {
       console.warn("Redis cache read failed:", e);
@@ -447,7 +460,7 @@ async function expandUrl(url: string): Promise<string> {
       });
 
       if (response.ok) {
-        const expandedUrl = response.url;
+        const expandedUrl = canonicalMediaUrl(response.url);
         if (urlHostLooksPrivate(expandedUrl)) {
           console.log(
             `Expand rejected final URL (private/local): ${expandedUrl}`,
@@ -474,62 +487,24 @@ if (!process.env.TELEGRAM_BOT_TOKEN) {
   process.exit(1);
 }
 
-function run(cmd: string, args: string[]): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
-    const p = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"] });
-    let stderr = "";
-    p.stderr.on("data", (d) => (stderr += d.toString()));
-    p.on("close", (code) => {
-      if (code === 0) {
-        resolve();
-      } else {
-        reject(new Error(`${cmd} exit ${code}: ${stderr}`));
-      }
-    });
-  });
+async function run(cmd: string, args: string[]): Promise<void> {
+  await runProcess(cmd, cmd === "curl" ? ["--fail", "--silent", "--show-error", "--connect-timeout", "10", "--max-time", "120", ...args] : args);
 }
 
-/** Парсит stderr yt-dlp для прогресса [download] 45.2% и вызывает callback (с троттлингом) */
-function runYtDlpWithProgress(
-  args: string[],
-  onProgress?: (percent: number) => void,
-): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
-    const p = spawn("yt-dlp", args, { stdio: ["ignore", "pipe", "pipe"] });
-    let stderr = "";
-    let lastReportedPercent = -1;
-    const PROGRESS_THROTTLE_PERCENT = 15;
-    const PROGRESS_THROTTLE_MS = 4000;
-    let lastReportTime = 0;
-    p.stderr.on("data", (d: Buffer) => {
-      const chunk = d.toString();
-      stderr += chunk;
-      if (!onProgress) return;
-      const match = chunk.match(/\[download\]\s+(\d+(?:\.\d+)?)%/);
-      if (match) {
-        const pct = Math.round(parseFloat(match[1]));
-        const now = Date.now();
-        if (
-          pct === 100 ||
-          pct - lastReportedPercent >= PROGRESS_THROTTLE_PERCENT ||
-          now - lastReportTime > PROGRESS_THROTTLE_MS
-        ) {
-          lastReportedPercent = pct;
-          lastReportTime = now;
-          onProgress(pct);
-        }
-      }
-    });
-
-    p.on("close", (code) => {
-      if (code === 0) {
-        if (onProgress && lastReportedPercent < 100) onProgress(100);
-        resolve();
-      } else {
-        reject(new Error(`yt-dlp exit ${code}: ${stderr}`));
-      }
-    });
-  });
+async function runYtDlpWithProgress(args: string[], onProgress?: (percent: number) => void): Promise<void> {
+  let lastPercent = -1;
+  let lastTime = 0;
+  await runProcess("yt-dlp", args, { onStderr: (chunk) => {
+    const match = chunk.match(/\[download\]\s+(\d+(?:\.\d+)?)%/);
+    if (!match || !onProgress) return;
+    const percent = Math.round(Number(match[1]));
+    if (percent === 100 || percent - lastPercent >= 15 || Date.now() - lastTime > 4000) {
+      lastPercent = percent;
+      lastTime = Date.now();
+      onProgress(percent);
+    }
+  }});
+  if (onProgress && lastPercent < 100) onProgress(100);
 }
 
 async function ytDownload(
@@ -551,7 +526,15 @@ async function ytDownload(
   const proxyNames = ["Shadowsocks", "Hysteria2", "VLESS"];
   let lastError: Error | null = null;
 
+  let cookiesPath: string | undefined;
+  if (process.env.YTDLP_COOKIES_FILE) {
+    cookiesPath = path.join(path.dirname(outPath), "cookies.txt");
+    copyFileSync(process.env.YTDLP_COOKIES_FILE, cookiesPath);
+    chmodSync(cookiesPath, 0o600);
+  }
   const baseArgs = [
+    "--socket-timeout", "15", "--retries", "2", "--fragment-retries", "2",
+    ...(cookiesPath ? ["--cookies", cookiesPath] : []),
     ...ytdlpFormatArgs(url),
     "--no-warnings",
     "--restrict-filenames",
@@ -594,6 +577,7 @@ async function ytDownload(
       return { type: "video", data: finalPath };
     } catch (e: any) {
       lastError = e;
+      journal.write("download_attempt_failed", { url, error: redact(String(e)), route: "yt-dlp" });
       const errorMsg = e.message || String(e);
       console.log(
         `❌ Прямая загрузка yt-dlp без прокси не сработала: ${errorMsg.substring(
@@ -604,14 +588,14 @@ async function ytDownload(
       console.log(
         "Все прямые попытки не сработали, пробуем альтернативные методы...",
       );
-      return await tryAlternativeDownload(url, outPath);
+      return await alternativeWithCause(url, outPath, lastError);
     }
   }
 
   const availableProxies = await getAvailableProxies();
   if (availableProxies.length === 0) {
     console.log("⚠️ Нет доступных прокси, пробуем альтернативные методы...");
-    return await tryAlternativeDownload(url, outPath);
+    return await alternativeWithCause(url, outPath, lastError);
   }
 
   const proxiesToTry = availableProxies;
@@ -651,6 +635,7 @@ async function ytDownload(
       return { type: "video", data: finalPath };
     } catch (e: any) {
       lastError = e;
+      journal.write("download_attempt_failed", { url, error: redact(String(e)), route: "yt-dlp" });
       const errorMsg = e.message || String(e);
       console.log(`❌ ${proxyName} не сработал: ${errorMsg.substring(0, 200)}`);
 
@@ -659,7 +644,7 @@ async function ytDownload(
   }
 
   console.log("Все прокси не сработали, пробуем альтернативные методы...");
-  return await tryAlternativeDownload(url, outPath);
+  return await alternativeWithCause(url, outPath, lastError);
 }
 
 const IMAGE_DOWNLOAD_CONCURRENCY = Number(
@@ -670,8 +655,9 @@ async function downloadSingleImage(
   imageUrl: string,
   index: number,
   total: number,
+  imageDir: string,
 ): Promise<string | null> {
-  const imagePath = path.join(TMP_DIR, `image_${randomUUID()}_${index}.jpg`);
+  const imagePath = path.join(imageDir, `image_${randomUUID()}_${index}.jpg`);
   const proxyNames = ["Shadowsocks", "Hysteria2", "VLESS"];
 
   // Сначала пробуем без прокси (быстрее на VPS без блокировок)
@@ -679,6 +665,7 @@ async function downloadSingleImage(
     try {
       const args = ["-L", "-o", imagePath, imageUrl];
       await run("curl", args);
+      await normalizeImageForTelegram(imagePath);
       return imagePath;
     } catch (e) {
       console.log(`Failed to download image ${index + 1}/${total}: ${e}`);
@@ -691,12 +678,14 @@ async function downloadSingleImage(
     try {
       const args = ["-L", "--proxy", proxy, "-o", imagePath, imageUrl];
       await run("curl", args);
+      await normalizeImageForTelegram(imagePath);
       return imagePath;
     } catch (e) {
       if (j === PROXY_LIST.length - 1) {
         try {
           const args = ["-L", "-o", imagePath, imageUrl];
           await run("curl", args);
+          await normalizeImageForTelegram(imagePath);
           return imagePath;
         } catch (e2) {
           console.log(`Failed to download image ${index + 1}/${total}: ${e2}`);
@@ -709,7 +698,7 @@ async function downloadSingleImage(
   return null;
 }
 
-async function downloadImages(imageUrls: string[]): Promise<string[]> {
+async function downloadImages(imageUrls: string[], imageDir: string): Promise<string[]> {
   const downloadedImages: (string | null)[] = new Array(imageUrls.length);
 
   for (
@@ -723,7 +712,7 @@ async function downloadImages(imageUrls: string[]): Promise<string[]> {
     );
     const results = await Promise.all(
       chunk.map((url, idx) =>
-        downloadSingleImage(url, chunkStart + idx, imageUrls.length),
+        downloadSingleImage(url, chunkStart + idx, imageUrls.length, imageDir),
       ),
     );
     for (let i = 0; i < results.length; i++) {
@@ -746,7 +735,7 @@ async function sendImagesInBatches(
     const batch = images.slice(i, i + batchSize);
 
     try {
-      await bot.api.sendChatAction(chatId, "upload_photo");
+      await bot.api.sendChatAction(chatId, "upload_photo").catch(() => {});
 
       if (batch.length === 1) {
         await bot.api.sendPhoto(chatId, new InputFile(batch[0]), {
@@ -770,6 +759,7 @@ async function sendImagesInBatches(
       console.log(
         `Failed to send batch ${Math.floor(i / batchSize) + 1}: ${e}`,
       );
+      throw e;
     }
   }
 
@@ -1147,6 +1137,17 @@ async function tryInstagramMirrorSources(
   return null;
 }
 
+async function alternativeWithCause(url: string, outPath: string, primary: Error | null) {
+  try { return await tryAlternativeDownload(url, outPath); }
+  catch (error) {
+    const secondary = error instanceof Error ? error : new Error(String(error));
+    if (!primary) throw secondary;
+    const combined = new Error(`${primary.message} | fallback: ${secondary.message}`);
+    if (secondary instanceof NonRetryableDownloadError) combined.name = secondary.name;
+    throw combined;
+  }
+}
+
 async function tryAlternativeDownload(
   url: string,
   outPath: string,
@@ -1189,20 +1190,16 @@ async function tryAlternativeDownload(
     return { type: "images", data: tiktokPhotos };
   }
 
-  const services = [
-    `https://tikwm.com/api/?url=${encodeURIComponent(url)}`,
-    `https://api.tikmate.app/api/lookup?id=${
-      url.split("/").pop()?.split("?")[0]
-    }`,
-  ];
+  const services = tikTokFallbackRequests(url);
 
   const availableProxies =
     XRAY_ENABLED && PROXY_LIST.length > 0 ? await getAvailableProxies() : [];
   const proxyNames = ["Shadowsocks", "Hysteria2", "VLESS"];
 
-  for (const serviceUrl of services) {
-    let serviceSuccess = false;
-    for (let i = 0; i < availableProxies.length && !serviceSuccess; i++) {
+  const failures: string[] = [];
+  for (const service of services) {
+    const serviceUrl = service.url;
+    for (let i = 0; i < availableProxies.length; i++) {
       const proxy = availableProxies[i];
       const originalIndex = PROXY_LIST.indexOf(proxy);
       const proxyName =
@@ -1211,114 +1208,76 @@ async function tryAlternativeDownload(
       try {
         console.log(`Trying service через ${proxyName}: ${serviceUrl}`);
 
-        let fetchOptions: RequestInit = {
-          headers: {
-            "User-Agent":
-              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-          },
-          signal: AbortSignal.timeout(15000),
-        };
-
-        const curlArgs = ["-L", "--proxy", proxy, serviceUrl];
-        const curlOutput = await new Promise<string>((resolve, reject) => {
-          const curl = spawn("curl", curlArgs);
-          let output = "";
-          curl.stdout.on("data", (data: Buffer) => (output += data.toString()));
-          curl.stderr.on("data", (data: Buffer) => {});
-          curl.on("close", (code: number) => {
-            if (code === 0) resolve(output);
-            else reject(new Error(`curl exit ${code}`));
-          });
-        });
-
-        const data = JSON.parse(curlOutput) as any;
-        serviceSuccess = true;
-
-        if (
-          data.data?.images &&
-          Array.isArray(data.data.images) &&
-          data.data.images.length > 0
-        ) {
-          console.log(
-            `Found photo post with ${data.data.images.length} images`,
-          );
-          return { type: "images", data: data.data.images };
+        const args = ["--fail", "--silent", "--show-error", "--connect-timeout", "10", "--max-time", "20", "-L", "--proxy", proxy];
+        for (const [name, value] of Object.entries(service.headers)) args.push("--header", `${name}: ${value}`);
+        if (service.body !== undefined) args.push("--data", service.body);
+        args.push(serviceUrl);
+        const { stdout: curlOutput } = await runProcess("curl", args, { maxOutputBytes: 2 * 1024 * 1024 });
+        const media = parseTikTokFallbackMedia(service.service, JSON.parse(curlOutput), url);
+        if (media.type === "images") {
+          journal.write("fallback_succeeded", { service: service.service, route: proxyName, type: media.type, count: media.data.length });
+          return media;
         }
-
-        let videoUrl = null;
-        if (data.data?.hdplay) {
-          videoUrl = data.data.hdplay;
-        } else if (data.data?.play) {
-          videoUrl = data.data.play;
-        } else if (data.video) {
-          videoUrl = data.video;
-        }
-
-        if (videoUrl) {
-          console.log(`Found video URL: ${videoUrl}`);
-          await downloadVideo(videoUrl, outPath);
-          return { type: "video", data: outPath };
-        }
+        await downloadVideo(media.data, outPath);
+        journal.write("fallback_succeeded", { service: service.service, route: proxyName, type: media.type });
+        return { type: "video", data: outPath };
       } catch (e: any) {
+        failures.push(`${new URL(serviceUrl).hostname}/${proxyName}: ${e.message || e}`);
+        journal.write("fallback_failed", { service: new URL(serviceUrl).hostname, route: proxyName, error: redact(String(e)) });
         console.log(`Service failed через ${proxyName}: ${e.message || e}`);
 
         continue;
       }
     }
 
-    if (!serviceSuccess) {
+    {
       try {
         console.log(`Trying service без прокси: ${serviceUrl}`);
         const response = await fetch(serviceUrl, {
-          headers: {
-            "User-Agent":
-              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-          },
+          method: service.method,
+          headers: service.headers,
+          body: service.body,
           signal: AbortSignal.timeout(15000),
         });
 
         if (!response.ok) {
+          failures.push(`${new URL(serviceUrl).hostname}: HTTP ${response.status}`);
+          journal.write("fallback_failed", { service: new URL(serviceUrl).hostname, status: response.status });
+          await response.body?.cancel();
           console.log(
             `Service failed без прокси: HTTP ${response.status} ${serviceUrl}`,
           );
           continue;
         }
 
-        const data = (await response.json()) as any;
-
-        if (
-          data.data?.images &&
-          Array.isArray(data.data.images) &&
-          data.data.images.length > 0
-        ) {
-          console.log(
-            `Found photo post with ${data.data.images.length} images`,
-          );
-          return { type: "images", data: data.data.images };
+        const media = parseTikTokFallbackMedia(service.service, await response.json(), url);
+        if (media.type === "images") {
+          journal.write("fallback_succeeded", { service: service.service, route: "direct", type: media.type, count: media.data.length });
+          return media;
         }
-
-        let videoUrl = null;
-        if (data.data?.hdplay) {
-          videoUrl = data.data.hdplay;
-        } else if (data.data?.play) {
-          videoUrl = data.data.play;
-        } else if (data.video) {
-          videoUrl = data.video;
-        }
-
-        if (videoUrl) {
-          console.log(`Found video URL: ${videoUrl}`);
-          await downloadVideo(videoUrl, outPath);
-          return { type: "video", data: outPath };
-        }
+        await downloadVideo(media.data, outPath);
+        journal.write("fallback_succeeded", { service: service.service, route: "direct", type: media.type });
+        return { type: "video", data: outPath };
       } catch (e) {
+        failures.push(`${new URL(serviceUrl).hostname}: ${e}`);
+        journal.write("fallback_failed", { service: new URL(serviceUrl).hostname, error: redact(String(e)) });
         console.log(`Service failed без прокси: ${e}`);
         continue;
       }
     }
   }
 
-  throw new Error("All download methods failed");
+  try {
+    const media = await fetchSssTikMedia(url);
+    if (media.type === "video") await downloadVideo(media.data, outPath);
+    journal.write("fallback_succeeded", { service: "ssstik", route: "direct", type: media.type });
+    return media.type === "images" ? media : { type: "video", data: outPath };
+  } catch (error) {
+    failures.push(`ssstik.io: ${error}`);
+    journal.write("fallback_failed", { service: "ssstik.io", route: "direct", error: redact(String(error)) });
+  }
+
+  throw new Error(`All download methods failed: ${failures.join(" | ") || "no media returned"}`);
 }
 
 async function downloadVideo(videoUrl: string, outPath: string): Promise<void> {
@@ -1378,20 +1337,10 @@ async function ffprobeDurationMs(file: string): Promise<number> {
     "default=nokey=1:noprint_wrappers=1",
     file,
   ];
-  let out = "";
-  await new Promise<void>((resolve, reject) => {
-    const p = spawn("ffprobe", args, { stdio: ["ignore", "pipe", "pipe"] });
-    p.stdout.on("data", (d) => (out += d.toString()));
-    p.on("close", (c) => {
-      if (c === 0) {
-        resolve();
-      } else {
-        reject(new Error("ffprobe failed"));
-      }
-    });
-  });
+  const { stdout: out } = await runProcess("ffprobe", args, { timeoutMs: 15000 });
   const s = parseFloat(out.trim());
-  return Math.max(0, Math.round(s * 1000));
+  if (!Number.isFinite(s) || s <= 0) throw new Error("Invalid video duration");
+  return Math.round(s * 1000);
 }
 
 async function recompressToTarget(
@@ -1444,23 +1393,21 @@ async function recompressToTarget(
   await run("ffmpeg", args);
 }
 
+const statsOutbox = new StatsOutbox(path.join(TMP_DIR, "stats-outbox"), async (payload) => {
+  const response = await fetch("http://bot:3000/stats", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Stats-Token": statsIngestSecret },
+    body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(5000),
+  });
+  await response.arrayBuffer();
+  if (!response.ok) throw new Error(`Stats HTTP ${response.status}`);
+});
+
 async function recordStat(payload: any): Promise<void> {
-  try {
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-      "X-Stats-Token": statsIngestSecret,
-    };
-    const response = await fetch("http://bot:3000/stats", {
-      method: "POST",
-      headers,
-      body: JSON.stringify(payload),
-    });
-    if (!response.ok) {
-      console.error("Failed to record stat:", response.statusText);
-    }
-  } catch (e) {
-    console.error("Error recording stat:", e);
-  }
+  journal.write("job_result", payload);
+  try { await statsOutbox.record(payload); }
+  catch (error) { journal.write("stats_outbox_error", { error: String(error) }); }
 }
 
 function buildStatPayload(
@@ -1493,13 +1440,15 @@ const worker = new Worker(
       job.data as JobData;
     const started = Date.now();
     const id = randomUUID();
-    const raw = path.join(TMP_DIR, `${id}.mp4`);
-    const out = path.join(TMP_DIR, `${id}.out.mp4`);
+    const jobDir = path.join(TMP_DIR, "jobs", id);
+    mkdirSync(jobDir, { recursive: true });
+    const raw = path.join(jobDir, `${id}.mp4`);
+    const out = path.join(jobDir, `${id}.out.mp4`);
 
-    console.log(`Processing job ${job.id}: ${url}`);
+    journal.write("job_started", { jobId: job.id, attempt: job.attemptsMade, url });
 
     try {
-      const expandedUrl = await expandUrl(url);
+      const expandedUrl = canonicalMediaUrl(await expandUrl(url));
       await rememberCacheUrlMapping(url, expandedUrl);
 
       const shared0 = probeLocalSharedCache(expandedUrl);
@@ -1593,9 +1542,9 @@ const worker = new Worker(
               `Processing photo post with ${result.data.length} images`,
             );
             const imageUrls = result.data as string[];
-            const downloadedImages = await downloadImages(imageUrls);
+            const downloadedImages = await downloadImages(imageUrls, jobDir);
 
-            if (downloadedImages.length > 0) {
+            if (downloadedImages.length === imageUrls.length && downloadedImages.length > 0) {
               const totalBytes = downloadedImages.reduce(
                 (sum, img) => sum + statSync(img).size,
                 0,
@@ -1621,7 +1570,7 @@ const worker = new Worker(
               });
               return;
             } else {
-              throw new Error("Failed to download any images");
+              throw new Error(`Incomplete album: ${downloadedImages.length}/${imageUrls.length} images downloaded`);
             }
           }
 
@@ -1631,6 +1580,7 @@ const worker = new Worker(
               `Видео не найдено по пути ${videoPath}. Проверьте лог загрузки.`,
             );
           }
+          await ffprobeDurationMs(videoPath);
           let bytes = statSync(videoPath).size;
           console.log(`Downloaded ${bytes} bytes`);
 
@@ -1659,7 +1609,7 @@ const worker = new Worker(
               rmSync(videoPath, { force: true });
             } catch {}
 
-            await bot.api.sendChatAction(chatId, "upload_video");
+            await bot.api.sendChatAction(chatId, "upload_video").catch(() => {});
             await bot.api.sendVideo(chatId, new InputFile(out), {
               reply_to_message_id: messageId,
             });
@@ -1672,7 +1622,7 @@ const worker = new Worker(
             return;
           }
 
-          await bot.api.sendChatAction(chatId, "upload_video");
+          await bot.api.sendChatAction(chatId, "upload_video").catch(() => {});
           await bot.api.sendVideo(chatId, new InputFile(videoPath), {
             reply_to_message_id: messageId,
           });
@@ -1691,9 +1641,9 @@ const worker = new Worker(
       );
     } catch (e: unknown) {
       const err = e instanceof Error ? e : new Error(String(e));
-      console.error(`Job ${job.id} failed:`, err);
-      const errorText =
-        "❌ Не удалось обработать ссылку. Попробуйте позже или другую публикацию.";
+      journal.write("job_attempt_failed", { jobId: job.id, attempt: job.attemptsMade, error: redact(err.stack || err.message) });
+      const decision = failureDecision(err, job.attemptsMade, job.opts.attempts || 1);
+      const errorText = decision.message;
       try {
         await bot.api.editMessageText(chatId, ackMessageId, errorText);
       } catch (editErr: unknown) {
@@ -1702,17 +1652,14 @@ const worker = new Worker(
           console.warn("editMessageText failed:", editErr);
         }
       }
-      await recordStat(
-        buildStatPayload(job, started, "failed", 0, err.message.slice(0, 500)),
-      );
-      if (err instanceof NonRetryableDownloadError) {
-        console.log(`⛔ Без повторов: ${err.message}`);
-        return;
+      if (decision.terminal) {
+        await recordStat(buildStatPayload(job, started, "failed", 0, redact(err.message).slice(0, 1000)));
+        job.discard();
       }
       throw err;
     } finally {
       try {
-        rmSync(raw, { force: true });
+        rmSync(jobDir, { recursive: true, force: true });
       } catch {}
       try {
         rmSync(out, { force: true });
@@ -1726,18 +1673,20 @@ const worker = new Worker(
 );
 
 worker.on("failed", (job, err) => {
-  console.error("Job failed:", job?.id, err);
+  journal.write("queue_failed", { jobId: job?.id, error: redact(err.message) });
 });
 
 worker.on("completed", (job) => {
-  console.log("Job completed:", job.id);
+  journal.write("queue_completed", { jobId: job.id });
 });
 
 worker.on("error", (err) => {
-  console.error("Worker error:", err);
+  journal.write("worker_error", { error: redact(err.message) });
 });
 
 cleanCacheOnStartup();
+void statsOutbox.flush().catch(console.error);
+setInterval(() => { void statsOutbox.flush().catch(console.error); }, 30000).unref();
 const CACHE_CLEANUP_INTERVAL_MS =
   Number(process.env.CACHE_CLEANUP_INTERVAL_MINUTES || "60") * 60 * 1000;
 setInterval(cleanCacheOnStartup, CACHE_CLEANUP_INTERVAL_MS);
@@ -1745,5 +1694,5 @@ console.log("🔧 Worker started successfully");
 console.log(`📊 Concurrency: ${process.env.MAX_CONCURRENCY || "1"}`);
 console.log(`📏 Size limit: ${SIZE_LIMIT_MB} MB`);
 console.log(
-  `🌐 Proxies: Shadowsocks=${YTDLP_PROXY_SHADOWSOCKS}, Hysteria2=${YTDLP_PROXY_HYSTERIA2}, VLESS=${YTDLP_PROXY_VLESS}`,
+  redact(`🌐 Proxies: Shadowsocks=${YTDLP_PROXY_SHADOWSOCKS}, Hysteria2=${YTDLP_PROXY_HYSTERIA2}, VLESS=${YTDLP_PROXY_VLESS}`),
 );

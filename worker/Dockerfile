@@ -1,33 +1,23 @@
-FROM node:20-alpine
-
-# ffmpeg + свежий yt-dlp из pip (в apk часто отстаёт; для Instagram это критично)
-RUN apk add --no-cache ffmpeg python3 py3-pip ca-certificates make g++ curl \
-  && pip install --no-cache-dir --break-system-packages -U "yt-dlp[default]"
-
+FROM node:20-alpine AS builder
 WORKDIR /app
-
-# Копируем package.json и устанавливаем зависимости (без lockfile используем install)
+RUN apk add --no-cache python3 make g++
 COPY package*.json ./
 RUN npm install
-
-# Копируем исходный код и tsconfig
 COPY src ./src
 COPY tsconfig.json ./
+RUN npm run build && npm prune --omit=dev
 
-# Компилируем TypeScript
-RUN npm run build
-
-# Оставляем только прод зависимости
-RUN npm prune --production
-
-# Создаем пользователя для безопасности и директории
+FROM node:20-alpine
+RUN apk add --no-cache ffmpeg python3 py3-pip ca-certificates curl \
+  && pip install --no-cache-dir --break-system-packages -U "yt-dlp[default]"
+WORKDIR /app
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/node_modules ./node_modules
+COPY package.json ./
 RUN addgroup -g 1001 -S nodejs \
   && adduser -S nodejs -u 1001 \
   && mkdir -p /tmp/downloads \
   && chown -R nodejs:nodejs /app /tmp/downloads
-
 USER nodejs
-
 VOLUME ["/tmp/downloads"]
-
 CMD ["node", "dist/index.js"]

@@ -121,3 +121,7 @@ temp/
 # Test files
 test_results/
 test_output/
+
+# Optional authenticated downloader cookies
+worker/cookies/*
+!worker/cookies/.gitkeep
