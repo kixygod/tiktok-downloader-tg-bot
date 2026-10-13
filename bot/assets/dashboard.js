@@ -793,8 +793,11 @@ document.getElementById("f-search").oninput = () => {
 };
 
 let modalNavigate = null;
+let disposeMediaViewer = null;
 
 function closeCacheModal() {
+  disposeMediaViewer?.();
+  disposeMediaViewer = null;
   removeModalFocusTrap();
   const ov = document.getElementById("cache-modal-overlay");
   ov.classList.remove("open");
@@ -818,9 +821,13 @@ function closeCacheModal() {
 }
 
 function openCacheModal(jobId, kind, imageCount) {
+  disposeMediaViewer?.();
+  disposeMediaViewer = null;
   focusBeforeModal = document.activeElement;
   const overlay = document.getElementById("cache-modal-overlay");
   const body = document.getElementById("cache-modal-body");
+  const modal = overlay.querySelector(".cache-modal");
+  modal.style.width = "";
   overlay.classList.add("open");
   overlay.setAttribute("aria-hidden", "false");
   document.body.classList.add("modal-open");
@@ -865,6 +872,13 @@ function openCacheModal(jobId, kind, imageCount) {
     }
   });
   actions.append(download, fullscreen);
+  const observers = [];
+  disposeMediaViewer = () => observers.forEach((observer) => observer.disconnect());
+  const fitModalWidth = (ratio, frameHeight) => {
+    if (!ratio || !frameHeight || document.fullscreenElement) return;
+    // Keep portrait media compact while leaving room for the controls.
+    modal.style.width = `${Math.min(1200, Math.max(520, frameHeight * ratio + 32))}px`;
+  };
 
   if (kind === "video") {
     stage.classList.add("media-stage--video");
@@ -932,6 +946,9 @@ function openCacheModal(jobId, kind, imageCount) {
       playButton.setAttribute("aria-label", video.paused ? "Воспроизвести" : "Пауза");
       muteButton.setAttribute("aria-pressed", String(video.muted));
       muteButton.setAttribute("aria-label", video.muted ? "Включить звук" : "Выключить звук");
+      muteButton.innerHTML = video.muted
+        ? '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 6h3l4-3v10l-4-3H2zm9-1 1.5 2L14 5l1 1-1.5 2L15 10l-1 1-1.5-2L11 11l-1-1 1.5-2L10 6z" /></svg>'
+        : '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 6h3l4-3v10l-4-3H2zm9-2v2a3 3 0 0 1 0 4v2a5 5 0 0 0 0-8z" /></svg>';
     };
 
     playButton.addEventListener("click", () => {
@@ -958,6 +975,16 @@ function openCacheModal(jobId, kind, imageCount) {
     video.volume = Number(volume.value);
     updateVideoControls();
     videoControls.append(playButton, seek, timeLabel, muteButton, volume);
+    fullscreen.className = "media-control-button media-fullscreen-toggle";
+    fullscreen.setAttribute("aria-label", "На весь экран");
+    fullscreen.title = "На весь экран";
+    fullscreen.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1 1h5v2H3v3H1zm9 0h5v5h-2V3h-3zM1 10h2v3h3v2H1zm12 0h2v5h-5v-2h3z" /></svg>';
+    videoControls.append(fullscreen);
+    const sizeVideo = () => fitModalWidth(video.videoWidth / video.videoHeight, videoFrame.clientHeight);
+    video.addEventListener("loadedmetadata", sizeVideo);
+    const videoObserver = new ResizeObserver(sizeVideo);
+    videoObserver.observe(videoFrame);
+    observers.push(videoObserver);
 
     video.addEventListener("error", () => {
       const message = document.createElement("p");
@@ -970,15 +997,39 @@ function openCacheModal(jobId, kind, imageCount) {
     videoFrame.append(video);
     stage.append(videoFrame, videoControls);
   } else {
+    stage.classList.add("media-stage--images");
+    const canvas = document.createElement("div");
+    canvas.className = "media-image-canvas";
     const image = document.createElement("img");
     image.alt = "";
     image.decoding = "async";
-    image.addEventListener("click", () => {
-      const zoomed = image.classList.toggle("is-zoomed");
-      stage.classList.toggle("is-zoomed", zoomed);
-      zoomButton.setAttribute("aria-pressed", String(zoomed));
-      zoomButton.textContent = zoomed ? "Уменьшить" : "Увеличить";
-    });
+    let sizing = "fit";
+    let scale = 1;
+    const sizeImage = () => {
+      if (!image.naturalWidth || !image.naturalHeight || !stage.clientHeight) return;
+      if (sizing === "fit") scale = Math.min(stage.clientWidth / image.naturalWidth, stage.clientHeight / image.naturalHeight, 1);
+      if (sizing === "width") scale = stage.clientWidth / image.naturalWidth;
+      const width = Math.round(image.naturalWidth * scale);
+      const height = Math.round(image.naturalHeight * scale);
+      image.style.width = `${width}px`;
+      image.style.height = `${height}px`;
+      canvas.style.width = `${Math.max(stage.clientWidth, width)}px`;
+      canvas.style.height = `${Math.max(stage.clientHeight, height)}px`;
+      stage.classList.toggle("is-zoomed", sizing !== "fit");
+      scaleLabel.textContent = `${Math.round(scale * 100)}%`;
+      fitButton.setAttribute("aria-pressed", String(sizing === "fit"));
+      widthButton.setAttribute("aria-pressed", String(sizing === "width"));
+    };
+    const setSizing = (mode) => {
+      sizing = mode;
+      stage.scrollTo(0, 0);
+      sizeImage();
+    };
+    image.addEventListener("click", () => setSizing(sizing === "fit" ? "width" : "fit"));
+    image.addEventListener("load", sizeImage);
+    const imageObserver = new ResizeObserver(sizeImage);
+    imageObserver.observe(stage);
+    observers.push(imageObserver);
     image.addEventListener("error", () => {
       const message = document.createElement("p");
       message.className = "media-stage-error";
@@ -999,20 +1050,35 @@ function openCacheModal(jobId, kind, imageCount) {
     next.className = "button button-quiet";
     next.textContent = "Вперёд";
     next.setAttribute("aria-label", "Следующее изображение");
-    const zoomButton = document.createElement("button");
-    zoomButton.type = "button";
-    zoomButton.className = "button button-quiet";
-    zoomButton.textContent = "Увеличить";
-    zoomButton.setAttribute("aria-pressed", "false");
-    zoomButton.addEventListener("click", () => image.click());
+    const sizingButton = (label, callback) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "button button-quiet";
+      button.textContent = label;
+      button.addEventListener("click", callback);
+      return button;
+    };
+    const fitButton = sizingButton("Целиком", () => setSizing("fit"));
+    const widthButton = sizingButton("По ширине", () => setSizing("width"));
+    const changeScale = (factor) => {
+      scale = Math.min(4, Math.max(0.05, scale * factor));
+      setSizing("custom");
+    };
+    const minus = sizingButton("−", () => changeScale(1 / 1.25));
+    minus.setAttribute("aria-label", "Уменьшить изображение");
+    const plus = sizingButton("+", () => changeScale(1.25));
+    plus.setAttribute("aria-label", "Увеличить изображение");
+    const scaleLabel = document.createElement("span");
+    scaleLabel.className = "media-scale";
     previous.addEventListener("click", () => showIndex(current - 1));
     next.addEventListener("click", () => showIndex(current + 1));
-    controls.append(previous, counter, next, zoomButton);
+    if (count > 1) controls.append(previous, counter, next);
+    controls.append(fitButton, widthButton, minus, scaleLabel, plus);
 
     const thumbnails = document.createElement("div");
     thumbnails.className = "media-thumbnails";
     thumbnails.setAttribute("aria-label", "Миниатюры изображений");
-    thumbnailStrip = thumbnails;
+    if (count > 1) thumbnailStrip = thumbnails;
     const thumbnailButtons = [];
     for (let index = 0; index < count; index++) {
       const thumbnail = document.createElement("button");
@@ -1033,12 +1099,10 @@ function openCacheModal(jobId, kind, imageCount) {
     function showIndex(index) {
       if (index < 0 || index >= count) return;
       current = index;
-      if (!image.isConnected) stage.replaceChildren(image);
+      if (!canvas.isConnected) stage.replaceChildren(canvas);
       const imageUrl = `/api/admin/cache/${encodeURIComponent(jobId)}/image/${index}`;
-      image.classList.remove("is-zoomed");
-      stage.classList.remove("is-zoomed");
-      zoomButton.setAttribute("aria-pressed", "false");
-      zoomButton.textContent = "Увеличить";
+      sizing = "fit";
+      stage.scrollTo(0, 0);
       image.alt = `Изображение ${index + 1} из ${count}`;
       image.src = imageUrl;
       counter.textContent = `${index + 1} из ${count}`;
@@ -1053,13 +1117,17 @@ function openCacheModal(jobId, kind, imageCount) {
     }
 
     modalNavigate = (direction) => showIndex(current + direction);
-    stage.appendChild(image);
+    canvas.append(image);
+    stage.append(canvas);
     showIndex(0);
   }
 
   toolbar.append(controls, actions);
   if (thumbnailStrip) viewer.append(stage, thumbnailStrip, toolbar);
-  else viewer.append(stage, toolbar);
+  else {
+    viewer.classList.add("media-viewer--single");
+    viewer.append(stage, toolbar);
+  }
   body.replaceChildren(viewer);
   requestAnimationFrame(() => focusModalClose());
 }
