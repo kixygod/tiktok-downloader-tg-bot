@@ -2,7 +2,7 @@ import { Worker, Job } from "bullmq";
 import IORedis from "ioredis";
 import type { JobData } from "./types";
 import { runProcess } from "./process";
-import { canonicalMediaUrl, failureDecision, redact, shouldFallbackToDocument } from "./reliability";
+import { canonicalMediaUrl, failureDecision, redact } from "./reliability";
 import { Journal, StatsOutbox } from "./journal";
 import {
   statSync,
@@ -29,6 +29,7 @@ import {
 import { isYouTubeUrl, ytdlpFormatArgs } from "./ytdlpFormat";
 import { tikTokFallbackRequests, parseTikTokFallbackMedia, fetchSssTikMedia } from "./tiktokFallback";
 import { normalizeImageForTelegram } from "./images";
+import { sendWithDocumentFallback } from "./imageDelivery";
 import { galleryDlPlatform, getGalleryDlImageUrls } from "./galleryDownload";
 
 const redisUrl = process.env.REDIS_URL!;
@@ -768,19 +769,56 @@ async function sendImagesInBatches(
 
     try {
       await bot.api.sendChatAction(chatId, "upload_photo").catch(() => {});
+      let documentFallbackAttempted = false;
 
-      if (batch.length === 1) {
-        await bot.api.sendPhoto(chatId, new InputFile(batch[0]), {
-          reply_to_message_id: messageId,
+      const delivery = await sendWithDocumentFallback(
+        async () => {
+          if (batch.length === 1) {
+            await bot.api.sendPhoto(chatId, new InputFile(batch[0]), {
+              reply_to_message_id: messageId,
+            });
+          } else {
+            const media = batch.map((img) => ({
+              type: "photo" as const,
+              media: new InputFile(img),
+            }));
+            await bot.api.sendMediaGroup(chatId, media, {
+              reply_to_message_id: messageId,
+            });
+          }
+        },
+        async () => {
+          documentFallbackAttempted = true;
+          journal.write("image_photo_fallback_to_document", {
+            jobId,
+            batch: Math.floor(i / batchSize) + 1,
+            count: batch.length,
+          });
+          for (let imageIndex = 0; imageIndex < batch.length; imageIndex++) {
+            if (imageIndex > 0) await sleep(1000);
+            await bot.api.sendChatAction(chatId, "upload_document").catch(() => {});
+            await bot.api.sendDocument(chatId, new InputFile(batch[imageIndex]), {
+              reply_to_message_id: messageId,
+              ...(imageIndex === 0
+                ? { caption: "Telegram не смог показать фото, поэтому отправляю его как файл." }
+                : {}),
+            });
+          }
+        },
+      ).catch((error) => {
+        journal.write(documentFallbackAttempted ? "image_document_fallback_failed" : "image_delivery_failed", {
+          jobId,
+          batch: Math.floor(i / batchSize) + 1,
+          error: redact(String(error)),
         });
-      } else {
-        const media = batch.map((img) => ({
-          type: "photo" as const,
-          media: new InputFile(img),
-        }));
+        throw error;
+      });
 
-        await bot.api.sendMediaGroup(chatId, media, {
-          reply_to_message_id: messageId,
+      if (delivery === "document") {
+        journal.write("image_document_fallback_succeeded", {
+          jobId,
+          batch: Math.floor(i / batchSize) + 1,
+          count: batch.length,
         });
       }
 
@@ -788,25 +826,6 @@ async function sendImagesInBatches(
         await sleep(1000);
       }
     } catch (e) {
-      if (shouldFallbackToDocument(e)) {
-        journal.write("image_photo_fallback_to_document", {
-          jobId,
-          batch: Math.floor(i / batchSize) + 1,
-          count: batch.length,
-        });
-        for (let imageIndex = 0; imageIndex < batch.length; imageIndex++) {
-          if (imageIndex > 0) await sleep(1000);
-          await bot.api.sendChatAction(chatId, "upload_document").catch(() => {});
-          await bot.api.sendDocument(chatId, new InputFile(batch[imageIndex]), {
-            reply_to_message_id: messageId,
-            ...(imageIndex === 0
-              ? { caption: "Telegram не смог показать фото, поэтому отправляю его как файл." }
-              : {}),
-          });
-        }
-        if (i + batchSize < images.length) await sleep(1000);
-        continue;
-      }
       console.log(
         `Failed to send batch ${Math.floor(i / batchSize) + 1}: ${e}`,
       );
@@ -1619,7 +1638,28 @@ const worker = new Worker(
             }
           };
 
-          let result = await ytDownload(expandedUrl, raw, progressCallback);
+          const isPinterest = galleryDlPlatform(expandedUrl) === "pinterest";
+          const pinterestImages = isPinterest
+            ? await tryGalleryDlImages(expandedUrl)
+            : [];
+          let result: { type: "video" | "images"; data: string | string[] };
+          if (pinterestImages.length > 0) {
+            result = { type: "images", data: pinterestImages };
+          } else {
+            try {
+              result = await ytDownload(expandedUrl, raw, progressCallback);
+            } catch (downloadError) {
+              if (
+                isPinterest &&
+                /No video formats found/i.test(String(downloadError))
+              ) {
+                throw new NonRetryableDownloadError(
+                  "Pinterest не отдал публичное изображение или видео без авторизации.",
+                );
+              }
+              throw downloadError;
+            }
+          }
 
           if (result.type === "video" && isImagePath(result.data as string)) {
             const galleryImages = await tryGalleryDlImages(expandedUrl);

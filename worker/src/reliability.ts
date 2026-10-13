@@ -21,16 +21,30 @@ export function shouldFallbackToDocument(error: unknown): boolean {
   return /IMAGE_PROCESS_FAILED|PHOTO_INVALID_DIMENSIONS/i.test(message);
 }
 
+export function isPermanentTelegramFailure(error: Error): boolean {
+  if (error.name !== "GrammyError") return false;
+  const errorCode = (error as Error & { error_code?: number }).error_code;
+  if (typeof errorCode === "number") {
+    return errorCode >= 400 && errorCode < 500 && errorCode !== 429;
+  }
+  return /failed! \((?:400|401|403):/i.test(error.message);
+}
+
 export function failureDecision(error: Error, attemptsMade: number, attempts: number) {
   const restricted = /private video|video has been removed/i.test(error.message) ||
     (!error.message.includes(" | fallback:") && /log in for access|login required|video unavailable/i.test(error.message));
-  const terminal = restricted || error.name === "NonRetryableDownloadError" || attemptsMade >= attempts;
+  const telegramRejected = isPermanentTelegramFailure(error);
+  const terminal = restricted || telegramRejected || error.name === "NonRetryableDownloadError" || attemptsMade >= attempts;
   return {
     terminal,
     message: !terminal
       ? `⏳ Временная ошибка. Повторяю обработку (${attemptsMade + 1}/${attempts})…`
       : restricted
         ? "❌ Публикация недоступна без авторизации или удалена. Попробуйте другую ссылку."
-        : "❌ Не удалось обработать ссылку после повторных попыток. Попробуйте позже или другую публикацию.",
+        : telegramRejected
+          ? "❌ Telegram отклонил медиа. Попробуйте другую публикацию."
+          : error.name === "NonRetryableDownloadError" && /Pinterest/i.test(error.message)
+            ? "❌ Pinterest не отдал публичное медиа без авторизации. Попробуйте другую публикацию."
+            : "❌ Не удалось обработать ссылку после повторных попыток. Попробуйте позже или другую публикацию.",
   };
 }

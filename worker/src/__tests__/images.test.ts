@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "n
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { runProcess } from "../process";
-import { normalizeImageForTelegram } from "../images";
+import { isTelegramPhoto, normalizeImageForTelegram } from "../images";
 
 const directories: string[] = [];
 const fixture = () => {
@@ -14,6 +14,11 @@ const fixture = () => {
 afterEach(() => { for (const dir of directories.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 
 describe("Telegram photo normalization (requires ffmpeg/ffprobe)", () => {
+  it("accepts 5000×4999 but rejects the 5000×5000 side-sum boundary", () => {
+    expect(isTelegramPhoto({ codec_name: "mjpeg", width: 5000, height: 4999 })).toBe(true);
+    expect(isTelegramPhoto({ codec_name: "mjpeg", width: 5000, height: 5000 })).toBe(false);
+  });
+
   it("converts WebP disguised as .jpg to JPEG and preserves dimensions", async () => {
     const file = fixture();
     await runProcess("ffmpeg", ["-v", "error", "-f", "lavfi", "-i", "color=c=red:s=16x16", "-frames:v", "1", "-c:v", "libwebp", "-f", "webp", file]);
@@ -40,8 +45,8 @@ describe("Telegram photo normalization (requires ffmpeg/ffprobe)", () => {
     ]);
     const image = JSON.parse(stdout).streams[0];
     expect(image.codec_name).toBe("mjpeg");
-    expect(image.width).toBeLessThanOrEqual(4000);
-    expect(image.height).toBeLessThanOrEqual(4000);
+    expect(image.width).toBeLessThanOrEqual(5000);
+    expect(image.height).toBeLessThanOrEqual(5000);
     expect(image.width + image.height).toBeLessThan(10000);
     expect(readFileSync(file).subarray(0, 2)).toEqual(Buffer.from([0xff, 0xd8]));
   });

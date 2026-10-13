@@ -39,6 +39,8 @@ const chartPalette = {
   surface: cssToken("--surface"),
   text: cssToken("--text"),
 };
+const dashboardFont = getComputedStyle(document.body).fontFamily;
+if (typeof Chart !== "undefined") Chart.defaults.font.family = dashboardFont;
 
 function chartAlpha(color, alpha) {
   const hex = color.replace("#", "");
@@ -688,13 +690,14 @@ async function loadRecent() {
       ? items
       .map((j) => {
         const url = j.url || "";
-        const urlDisplay = url
-          ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(url)}</a>`
-          : "-";
+        const safeUrl = /^https?:\/\//i.test(url);
+        const urlDisplay = safeUrl
+          ? `<a class="request-link" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(url)}">${escapeHtml(url)}</a>`
+          : `<span class="request-link">${escapeHtml(url) || "Ссылка не указана"}</span>`;
         const fullError = j.error_message ? escapeHtml(String(j.error_message)) : "";
-        const err = fullError
-          ? escapeHtml(String(j.error_message).slice(0, 80))
-          : "";
+        const err = j.error_message ? escapeHtml(String(j.error_message).slice(0, 88)) : "";
+        const requestId = escapeHtml(String(j.id ?? "-"));
+        const requestTime = escapeHtml(fmtTime(j.ts));
         const userName =
           j.first_name ||
           j.username ||
@@ -714,7 +717,7 @@ async function loadRecent() {
           ? `<a href="${escapeHtml(j.chatUrl)}" target="_blank" rel="noopener">${escapeHtml(chatTitle)}</a>`
           : escapeHtml(chatTitle);
         const chatBadge = j.chatType
-          ? `<span class="chat-type-badge">${chatTypeLabel(j.chatType)}</span> `
+          ? `<span class="chat-type-badge">${chatTypeLabel(j.chatType)}</span>`
           : "";
         const cp = j.cachePreview || {};
         let cacheCell;
@@ -725,25 +728,22 @@ async function loadRecent() {
               : cp.imageCount === 1
                 ? "1 фото"
                 : `${cp.imageCount} фото`;
-          cacheCell = `<button type="button" class="btn-cache-view" data-job-id="${j.id}" data-kind="${cp.kind}" data-image-count="${cp.imageCount || 0}">${escapeHtml(lbl)}</button>`;
+          const mediaLabel = cp.kind === "video" ? "Открыть видео из кэша" : "Открыть фото из кэша";
+          cacheCell = `<button type="button" class="btn-cache-view" data-job-id="${escapeHtml(String(j.id))}" data-kind="${escapeHtml(cp.kind)}" data-image-count="${Number(cp.imageCount) || 0}" aria-label="${mediaLabel}, запрос ${requestId}">${escapeHtml(lbl)}</button>`;
         } else {
-          cacheCell = `<span class="cache-miss-wrap"><span class="cache-miss" title="Нет в кэше или истёк срок (до ~24 ч)">-</span><button type="button" class="btn-cache-rehydrate" title="Восстановить связь с кэшем на диске" data-job-id="${j.id}" aria-label="Восстановить кэш"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M16 10a6 6 0 1 1-1.5-4M16 4v4h-4" /></svg></button></span>`;
+          cacheCell = `<span class="cache-miss-wrap"><span class="cache-miss" title="Медиа больше нет в кэше">Нет в кэше</span><button type="button" class="btn-cache-rehydrate" title="Проверить кэш на диске" data-job-id="${escapeHtml(String(j.id))}" aria-label="Проверить кэш, запрос ${requestId}"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M16 10a6 6 0 1 1-1.5-4M16 4v4h-4" /></svg></button></span>`;
         }
         return `<tr>
-<td>${fmtTime(j.ts)}</td>
-<td><div class="user-cell">${avatarHtml}${userLink}</div></td>
-<td>${chatBadge}${chatLink}</td>
-<td>${escapeHtml(platformLabel(j.platform))}</td>
-<td class="url-cell" title="${escapeHtml(url)}">${urlDisplay}</td>
-<td>${statusBadge(j.status)}</td>
-<td>${fmtBytes(j.bytes)}</td>
-<td>${fmtMs(j.duration_ms)}</td>
-<td class="cache-cell">${cacheCell}</td>
-<td class="error-cell" title="${fullError}">${err || "-"}</td>
+<td data-label="Запрос"><div class="request-cell"><span class="request-id">#${requestId}</span>${urlDisplay}<span class="request-meta">${requestTime}</span></div></td>
+<td data-label="Пользователь и чат"><div class="person-cell">${avatarHtml}<div class="person-content"><div class="user-cell">${userLink}</div><div class="person-chat">${chatBadge}${chatLink}</div></div></div></td>
+<td data-label="Источник"><span class="platform-chip">${escapeHtml(platformLabel(j.platform))}</span></td>
+<td data-label="Результат"><div class="status-cell">${statusBadge(j.status)}${err ? `<span class="error-cell" title="${fullError}">${err}</span>` : ""}</div></td>
+<td data-label="Медиа" class="cache-cell">${cacheCell}</td>
+<td data-label="Размер и время"><div class="transfer-cell"><strong>${fmtBytes(j.bytes)}</strong><span class="transfer-meta">Обработка ${fmtMs(j.duration_ms)}</span></div></td>
     </tr>`;
       })
       .join("")
-      : '<tr><td colspan="10" class="empty-table">По этим фильтрам запросов нет</td></tr>';
+      : '<tr><td colspan="6" class="empty-table">По этим фильтрам запросов нет</td></tr>';
 
     const pages = Math.ceil(totalRows / PAGE_SIZE);
     document.getElementById("pg-info").textContent = `${page + 1} / ${
@@ -867,12 +867,93 @@ function openCacheModal(jobId, kind, imageCount) {
   if (kind === "video") {
     const videoUrl = `/api/admin/cache/${encodeURIComponent(jobId)}/video`;
     const video = document.createElement("video");
-    video.controls = true;
+    video.controls = false;
     video.playsInline = true;
     video.preload = "metadata";
     video.tabIndex = 0;
     video.src = videoUrl;
     video.setAttribute("aria-label", "Видео из кэша");
+
+    const videoControls = document.createElement("div");
+    videoControls.className = "media-video-controls";
+    videoControls.setAttribute("aria-label", "Управление видео");
+    videoControls.addEventListener("click", (event) => event.stopPropagation());
+
+    const playButton = document.createElement("button");
+    playButton.type = "button";
+    playButton.className = "media-control-button media-play-toggle";
+    playButton.setAttribute("aria-label", "Воспроизвести");
+
+    const seek = document.createElement("input");
+    seek.className = "media-seek";
+    seek.type = "range";
+    seek.min = "0";
+    seek.max = "1000";
+    seek.value = "0";
+    seek.setAttribute("aria-label", "Позиция воспроизведения");
+
+    const timeLabel = document.createElement("span");
+    timeLabel.className = "media-time";
+    timeLabel.setAttribute("aria-live", "off");
+
+    const muteButton = document.createElement("button");
+    muteButton.type = "button";
+    muteButton.className = "media-control-button media-mute-toggle";
+    muteButton.textContent = "Звук";
+
+    const volume = document.createElement("input");
+    volume.className = "media-volume";
+    volume.type = "range";
+    volume.min = "0";
+    volume.max = "1";
+    volume.step = "0.05";
+    volume.value = "0.8";
+    volume.setAttribute("aria-label", "Громкость");
+
+    const formatVideoTime = (seconds) => {
+      if (!Number.isFinite(seconds) || seconds < 0) return "0:00";
+      const total = Math.floor(seconds);
+      return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
+    };
+    const updateVideoControls = () => {
+      const duration = Number.isFinite(video.duration) ? video.duration : 0;
+      const position = Number.isFinite(video.currentTime) ? video.currentTime : 0;
+      seek.value = String(duration ? Math.round((position / duration) * 1000) : 0);
+      seek.setAttribute("aria-valuetext", `${formatVideoTime(position)} из ${formatVideoTime(duration)}`);
+      timeLabel.textContent = `${formatVideoTime(position)} / ${formatVideoTime(duration)}`;
+      playButton.innerHTML = video.paused
+        ? '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.5v11L13 8z" /></svg>'
+        : '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 3h3v10H4zm5 0h3v10H9z" /></svg>';
+      playButton.setAttribute("aria-label", video.paused ? "Воспроизвести" : "Пауза");
+      muteButton.setAttribute("aria-pressed", String(video.muted));
+      muteButton.setAttribute("aria-label", video.muted ? "Включить звук" : "Выключить звук");
+    };
+
+    playButton.addEventListener("click", () => {
+      if (video.paused) video.play().catch(() => {});
+      else video.pause();
+    });
+    seek.addEventListener("input", () => {
+      if (Number.isFinite(video.duration) && video.duration > 0) {
+        video.currentTime = (Number(seek.value) / 1000) * video.duration;
+      }
+    });
+    muteButton.addEventListener("click", () => {
+      video.muted = !video.muted;
+      updateVideoControls();
+    });
+    volume.addEventListener("input", () => {
+      video.volume = Number(volume.value);
+      video.muted = video.volume === 0;
+      updateVideoControls();
+    });
+    ["play", "pause", "ended", "timeupdate", "loadedmetadata", "durationchange", "volumechange"].forEach((eventName) => {
+      video.addEventListener(eventName, updateVideoControls);
+    });
+    video.volume = Number(volume.value);
+    updateVideoControls();
+    videoControls.append(playButton, seek, timeLabel, muteButton, volume);
+
     video.addEventListener("error", () => {
       const message = document.createElement("p");
       message.className = "media-stage-error";
@@ -881,8 +962,7 @@ function openCacheModal(jobId, kind, imageCount) {
     });
     download.href = videoUrl;
     download.download = `media-${jobId}.mp4`;
-    stage.appendChild(video);
-    controls.appendChild(document.createElement("span"));
+    stage.append(video, videoControls);
   } else {
     const image = document.createElement("img");
     image.alt = "";

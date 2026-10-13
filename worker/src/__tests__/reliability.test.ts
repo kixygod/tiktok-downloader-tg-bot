@@ -29,6 +29,21 @@ describe('retry decisions', () => {
     expect(result.terminal).toBe(true);
     expect(result.message).toContain('авторизац');
   });
+  it("stops retrying permanent Telegram rejections", () => {
+    const error = new Error("Call to 'sendPhoto' failed! (400: Bad Request: IMAGE_PROCESS_FAILED)");
+    error.name = "GrammyError";
+    Object.assign(error, { error_code: 400 });
+    const result = failureDecision(error, 1, 3);
+    expect(result.terminal).toBe(true);
+    expect(result.message).toContain("Telegram отклонил медиа");
+    expect(result.message).not.toContain("повторных попыток");
+  });
+  it("keeps transient Telegram server errors retryable", () => {
+    const error = new Error("Call to 'sendPhoto' failed! (500: Internal Server Error)");
+    error.name = "GrammyError";
+    Object.assign(error, { error_code: 500 });
+    expect(failureDecision(error, 1, 3).terminal).toBe(false);
+  });
   it('retries failed public fallbacks even when yt-dlp requests login', () => {
     const error = new Error('TikTok: Log in for access | fallback: All download methods failed: SSSTik: no media returned');
     expect(failureDecision(error, 1, 3).terminal).toBe(false);

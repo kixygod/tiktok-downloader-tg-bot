@@ -1,7 +1,7 @@
 import { renameSync, rmSync } from "node:fs";
 import { runProcess } from "./process";
 
-const MAX_IMAGE_EDGE = 4000;
+const MAX_IMAGE_EDGE = 5000;
 const TELEGRAM_MAX_SIDE_SUM = 10000;
 
 interface ImageStream {
@@ -26,7 +26,7 @@ async function inspectImage(file: string): Promise<ImageStream | null> {
   return streams?.[0] ?? null;
 }
 
-function isTelegramPhoto(stream: ImageStream | null): boolean {
+export function isTelegramPhoto(stream: ImageStream | null): boolean {
   if (stream?.codec_name !== "mjpeg") return false;
   const width = Number(stream.width);
   const height = Number(stream.height);
@@ -43,10 +43,21 @@ function isTelegramPhoto(stream: ImageStream | null): boolean {
 export async function normalizeImageForTelegram(file: string): Promise<void> {
   const stream = await inspectImage(file);
   if (isTelegramPhoto(stream)) return;
+  if (!stream) throw new Error("Unable to inspect downloaded image");
 
+  const width = Number(stream.width);
+  const height = Number(stream.height);
+  const scale = Math.min(
+    1,
+    MAX_IMAGE_EDGE / width,
+    MAX_IMAGE_EDGE / height,
+    (TELEGRAM_MAX_SIDE_SUM - 2) / (width + height),
+  );
+  const targetWidth = Math.max(2, Math.floor(width * scale));
+  const targetHeight = Math.max(2, Math.floor(height * scale));
   const converted = `${file}.converted.jpg`;
   const filter = [
-    `[0:v:0]scale=w='min(iw,${MAX_IMAGE_EDGE})':h='min(ih,${MAX_IMAGE_EDGE})':force_original_aspect_ratio=decrease:force_divisible_by=2[foreground]`,
+    `[0:v:0]scale=w='min(iw,${targetWidth})':h='min(ih,${targetHeight})':force_original_aspect_ratio=decrease:force_divisible_by=2[foreground]`,
     "color=c=white:s=1x1[background]",
     "[background][foreground]scale2ref[background_scaled][foreground_scaled]",
     "[background_scaled][foreground_scaled]overlay=shortest=1:format=auto,format=yuvj420p[out]",
@@ -70,6 +81,10 @@ export async function normalizeImageForTelegram(file: string): Promise<void> {
       ],
       { timeoutMs: 20000 },
     );
+    const normalized = await inspectImage(converted);
+    if (!isTelegramPhoto(normalized)) {
+      throw new Error("Normalized image still exceeds Telegram photo limits");
+    }
     renameSync(converted, file);
   } finally {
     rmSync(converted, { force: true });

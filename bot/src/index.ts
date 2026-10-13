@@ -1,6 +1,5 @@
 import { Bot, GrammyError, HttpError } from "grammy";
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
-import fastifyBasicAuth from "@fastify/basic-auth";
 import { Queue, QueueEvents } from "bullmq";
 import IORedis from "ioredis";
 import { ProxyAgent, setGlobalDispatcher } from "undici";
@@ -12,6 +11,12 @@ const AVATAR_PLACEHOLDER_GIF = Buffer.from(
   "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7",
   "base64",
 );
+const DASHBOARD_FONT_FILES = new Set([
+  "ibm-plex-sans-cyrillic-ext.woff2",
+  "ibm-plex-sans-cyrillic.woff2",
+  "ibm-plex-sans-latin-ext.woff2",
+  "ibm-plex-sans-latin.woff2",
+]);
 
 /** Видимая заглушка для `/api/avatar` (прозрачный GIF ломал UX: img грузился «успешно», onerror не вызывался). */
 const AVATAR_PLACEHOLDER_SVG = Buffer.from(
@@ -60,7 +65,6 @@ import {
   JOBS_PURGE_INTERVAL_HOURS,
 } from "./config";
 import {
-  parseDashboardBasicAuth,
   timingSafeEqualUtf8,
   toContainsLikePattern,
 } from "./utils";
@@ -77,6 +81,7 @@ import {
 } from "./cacheFs";
 import { rehydrateCacheMappingForJobUrl } from "./cacheRehydrate";
 import { DashboardEventBus } from "./dashboardEvents";
+import { registerDashboardAuth } from "./dashboardAuth";
 
 console.log("🔧 Environment variables:");
 console.log(`  BOT_TOKEN: ${token ? "SET" : "NOT SET"}`);
@@ -448,6 +453,17 @@ async function startServer() {
       .send(createReadStream(p));
   });
 
+  fastify.get("/assets/fonts/:font", async (request: any, reply) => {
+    const name = String(request.params.font || "");
+    if (!DASHBOARD_FONT_FILES.has(name)) return reply.status(404).send("Not found");
+    const p = join(__dirname, "..", "assets", "fonts", name);
+    if (!existsSync(p)) return reply.status(404).send("Not found");
+    return reply
+      .header("Cache-Control", "public, max-age=31536000, immutable")
+      .type("font/woff2")
+      .send(createReadStream(p));
+  });
+
   const statsBodySchema = {
     type: "object",
     required: ["ts", "url", "status", "bytes", "duration_ms", "chat_id"],
@@ -588,18 +604,7 @@ async function startServer() {
   }
 
   await fastify.register(async function (secured) {
-    await secured.register(fastifyBasicAuth, {
-      validate: async (username: any, password: any) => {
-        const raw = process.env.DASHBOARD_BASIC_AUTH ?? "admin:admin";
-        const { username: u, password: p } = parseDashboardBasicAuth(raw);
-        if (username !== u || password !== p) throw new Error("Auth failed");
-      },
-      authenticate: true,
-    });
-
-    secured.after(() => {
-      secured.addHook("onRequest", secured.basicAuth);
-    });
+    await registerDashboardAuth(secured);
 
     secured.get("/api/queue", async () => {
       const [waiting, active, delayed, failed] = await Promise.all([
