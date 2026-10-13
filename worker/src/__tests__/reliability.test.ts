@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { runProcess } from '../process';
-import { failureDecision, redact, canonicalMediaUrl } from '../reliability';
+import { failureDecision, redact, canonicalMediaUrl, shouldFallbackToDocument } from '../reliability';
 
 describe('external processes', () => {
   it('drains stdout and bounds captured output', async () => {
@@ -44,5 +44,16 @@ describe('retry decisions', () => {
     expect(redact('https://api.telegram.org/bot123456789:ABCabc_def/getMe http://user:pass@proxy:80')).not.toContain('ABCabc_def');
     expect(redact('http://user:pass@proxy:80')).not.toContain('pass');
     expect(redact('-1003615875017:17813:0')).toBe('-1003615875017:17813:0');
+  });
+});
+
+describe("photo delivery fallback", () => {
+  it("uses document delivery when Telegram cannot process an uploaded photo", () => {
+    expect(shouldFallbackToDocument(new Error("Bad Request: IMAGE_PROCESS_FAILED"))).toBe(true);
+  });
+
+  it("does not turn unrelated Telegram failures into document uploads", () => {
+    expect(shouldFallbackToDocument(new Error("Too Many Requests: retry after 5"))).toBe(false);
+    expect(shouldFallbackToDocument(new Error("Forbidden: bot was blocked by the user"))).toBe(false);
   });
 });

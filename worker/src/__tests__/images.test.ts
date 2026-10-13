@@ -27,12 +27,55 @@ describe("Telegram photo normalization (requires ffmpeg/ffprobe)", () => {
     expect(readdirSync(path.dirname(file))).toEqual(["photo.jpg"]);
   });
 
-  it("preserves PNG bytes", async () => {
+  it("converts oversized PNG images into Telegram-compatible JPEGs", async () => {
     const file = fixture();
-    const png = Buffer.from("89504e470d0a1a0a00000000", "hex");
-    writeFileSync(file, png);
+    await runProcess("ffmpeg", [
+      "-v", "error", "-f", "lavfi", "-i", "color=c=red:s=6000x4000",
+      "-frames:v", "1", "-vcodec", "png", "-y", file,
+    ]);
     await normalizeImageForTelegram(file);
-    expect(readFileSync(file)).toEqual(png);
+    const { stdout } = await runProcess("ffprobe", [
+      "-v", "error", "-select_streams", "v:0", "-show_entries",
+      "stream=codec_name,width,height", "-of", "json", file,
+    ]);
+    const image = JSON.parse(stdout).streams[0];
+    expect(image.codec_name).toBe("mjpeg");
+    expect(image.width).toBeLessThanOrEqual(4000);
+    expect(image.height).toBeLessThanOrEqual(4000);
+    expect(image.width + image.height).toBeLessThan(10000);
+    expect(readFileSync(file).subarray(0, 2)).toEqual(Buffer.from([0xff, 0xd8]));
+  });
+
+  it("scales a 5000×5000 JPEG below Telegram's strict side-sum limit", async () => {
+    const file = fixture();
+    await runProcess("ffmpeg", [
+      "-v", "error", "-f", "lavfi", "-i", "color=c=blue:s=5000x5000",
+      "-frames:v", "1", "-q:v", "2", "-y", file,
+    ]);
+    await normalizeImageForTelegram(file);
+    const { stdout } = await runProcess("ffprobe", [
+      "-v", "error", "-select_streams", "v:0", "-show_entries",
+      "stream=codec_name,width,height", "-of", "json", file,
+    ]);
+    const image = JSON.parse(stdout).streams[0];
+    expect(image.width + image.height).toBeLessThan(10000);
+  });
+
+  it("keeps a valid 5000×4999 JPEG under the strict side-sum limit", async () => {
+    const file = fixture();
+    await runProcess("ffmpeg", [
+      "-v", "error", "-f", "lavfi", "-i", "color=c=blue:s=5000x4999",
+      "-frames:v", "1", "-q:v", "2", "-y", file,
+    ]);
+    await normalizeImageForTelegram(file);
+    const { stdout } = await runProcess("ffprobe", [
+      "-v", "error", "-select_streams", "v:0", "-show_entries",
+      "stream=codec_name,width,height", "-of", "json", file,
+    ]);
+    const image = JSON.parse(stdout).streams[0];
+    expect(image.width).toBe(5000);
+    expect(image.height).toBe(4999);
+    expect(image.width + image.height).toBeLessThan(10000);
   });
 
   it("rejects corrupted WebP without replacing the source or leaving temporary files", async () => {
