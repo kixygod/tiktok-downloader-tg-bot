@@ -1,7 +1,7 @@
 import { Bot, GrammyError, HttpError } from "grammy";
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import fastifyBasicAuth from "@fastify/basic-auth";
-import { Queue } from "bullmq";
+import { Queue, QueueEvents } from "bullmq";
 import IORedis from "ioredis";
 import { ProxyAgent, setGlobalDispatcher } from "undici";
 import { readFileSync, createReadStream, existsSync } from "node:fs";
@@ -76,6 +76,7 @@ import {
   getImageFilePath,
 } from "./cacheFs";
 import { rehydrateCacheMappingForJobUrl } from "./cacheRehydrate";
+import { DashboardEventBus } from "./dashboardEvents";
 
 console.log("🔧 Environment variables:");
 console.log(`  BOT_TOKEN: ${token ? "SET" : "NOT SET"}`);
@@ -374,6 +375,31 @@ async function getCachedAvatarPath(userId: number): Promise<string | null> {
 }
 
 async function startServer() {
+  const dashboardEvents = new DashboardEventBus();
+  const queueEvents = new QueueEvents(queueName, {
+    connection: connection.duplicate(),
+  });
+  queueEvents.on("error", (error) => {
+    fastify.log.warn({ error }, "Dashboard queue event stream disconnected");
+  });
+  const queueEventNames = [
+    "active", "waiting", "completed", "failed", "stalled", "progress", "delayed",
+  ] as const;
+  for (const eventName of queueEventNames) {
+    queueEvents.on(eventName, () => dashboardEvents.publish(["queue"]));
+  }
+  void queueEvents.waitUntilReady().catch((error) => {
+    fastify.log.warn({ error }, "Dashboard queue event stream is not ready");
+  });
+
+  const heartbeat = setInterval(() => dashboardEvents.heartbeat(), 20000);
+  heartbeat.unref();
+  fastify.addHook("onClose", async () => {
+    clearInterval(heartbeat);
+    dashboardEvents.close();
+    await queueEvents.close();
+  });
+
   fastify.get("/health", async () => ({ ok: true }));
 
   fastify.get("/favicon.ico", async (_req, reply) =>
@@ -445,6 +471,8 @@ async function startServer() {
     additionalProperties: false,
   };
 
+  const apiCache = new Map<string, { data: unknown; expiresAt: number }>();
+
   fastify.post(
     "/stats",
     {
@@ -454,12 +482,13 @@ async function startServer() {
     async (request) => {
       const body = request.body as StatsBody;
       await insertStat(body);
+      apiCache.delete("stats");
+      apiCache.delete("charts");
+      dashboardEvents.publish(["stats", "charts", "recent"]);
 
       return { ok: true };
     },
   );
-
-  const apiCache = new Map<string, { data: unknown; expiresAt: number }>();
 
   function getCached<T>(key: string, fetcher: () => Promise<T>): Promise<T> {
     const cached = apiCache.get(key);
@@ -580,6 +609,20 @@ async function startServer() {
         queue.getFailedCount(),
       ]);
       return { waiting, active, delayed, failed };
+    });
+
+    secured.get("/api/admin/events", async (request, reply) => {
+      reply.hijack();
+      reply.raw.writeHead(200, {
+        "Content-Type": "text/event-stream; charset=utf-8",
+        "Cache-Control": "no-cache, no-transform",
+        Connection: "keep-alive",
+        "X-Accel-Buffering": "no",
+      });
+      reply.raw.write("retry: 3000\nevent: connected\ndata: {}\n\n");
+      const unsubscribe = dashboardEvents.subscribe(reply.raw);
+      reply.raw.on("close", unsubscribe);
+      request.raw.on("aborted", unsubscribe);
     });
 
     secured.get("/api/chat/:chatId", async (request: any, reply: any) => {

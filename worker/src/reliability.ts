@@ -16,6 +16,11 @@ export function canonicalMediaUrl(raw: string): string {
   } catch { return raw; }
 }
 
+export function shouldFallbackToDocument(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /IMAGE_PROCESS_FAILED|PHOTO_INVALID_DIMENSIONS/i.test(message);
+}
+
 export function failureDecision(error: Error, attemptsMade: number, attempts: number) {
   const restricted = /private video|video has been removed/i.test(error.message) ||
     (!error.message.includes(" | fallback:") && /log in for access|login required|video unavailable/i.test(error.message));

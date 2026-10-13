@@ -6,15 +6,48 @@ let chartMissingLogged = false;
 let dailyC, hourlyC, perfC, platformC, statusC, trafficC;
 
 let loadStatsBusy = false;
+let loadStatsPending = false;
 let loadQueueBusy = false;
+let loadQueuePending = false;
 let loadChartsBusy = false;
+let loadChartsPending = false;
 let loadRecentBusy = false;
 let loadRecentPending = false;
 let modalFocusTrapCleanup = null;
 let focusBeforeModal = null;
+let eventSource = null;
+let refreshTimer = null;
+const pendingScopes = new Set();
 
 function docHidden() {
   return document.visibilityState === "hidden";
+}
+
+function cssToken(name) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
+const chartPalette = {
+  brand: cssToken("--brand"),
+  success: cssToken("--success"),
+  danger: cssToken("--danger"),
+  warning: cssToken("--warning"),
+  info: cssToken("--info"),
+  cache: cssToken("--cache"),
+  muted: cssToken("--muted"),
+  line: cssToken("--line"),
+  surface: cssToken("--surface"),
+  text: cssToken("--text"),
+};
+
+function chartAlpha(color, alpha) {
+  const hex = color.replace("#", "");
+  const normalized = hex.length === 3 ? [...hex].map((part) => part + part).join("") : hex;
+  if (!/^[\da-f]{6}$/i.test(normalized)) return color;
+  const red = parseInt(normalized.slice(0, 2), 16);
+  const green = parseInt(normalized.slice(2, 4), 16);
+  const blue = parseInt(normalized.slice(4, 6), 16);
+  return `rgba(${red},${green},${blue},${alpha})`;
 }
 
 const chartDefaults = {
@@ -23,23 +56,23 @@ const chartDefaults = {
   plugins: {
     legend: { display: false },
     tooltip: {
-      backgroundColor: "#1a2035",
-      titleColor: "#e2e8f0",
-      bodyColor: "#cbd5e1",
-      borderColor: "#232d45",
+      backgroundColor: chartPalette.text,
+      titleColor: chartPalette.surface,
+      bodyColor: chartPalette.surface,
+      borderColor: chartPalette.line,
       borderWidth: 1,
       padding: 10,
-      cornerRadius: 8,
+      cornerRadius: 10,
     },
   },
   scales: {
     x: {
-      grid: { color: "rgba(35,45,69,.6)" },
-      ticks: { color: "#64748b", font: { size: 11 } },
+      grid: { color: chartPalette.line },
+      ticks: { color: chartPalette.muted, font: { size: 11 } },
     },
     y: {
-      grid: { color: "rgba(35,45,69,.6)" },
-      ticks: { color: "#64748b", font: { size: 11 } },
+      grid: { color: chartPalette.line },
+      ticks: { color: chartPalette.muted, font: { size: 11 } },
       beginAtZero: true,
     },
   },
@@ -176,7 +209,7 @@ function platformLabel(p) {
       facebook: "Facebook",
     }[p] ||
     p ||
-    "—"
+    "Неизвестная"
   );
 }
 
@@ -201,7 +234,11 @@ function userAvatarInitial(name) {
 }
 
 async function loadQueue() {
-  if (docHidden() || loadQueueBusy) return;
+  if (docHidden()) return;
+  if (loadQueueBusy) {
+    loadQueuePending = true;
+    return;
+  }
   loadQueueBusy = true;
   try {
     const r = await fetch("/api/queue", { credentials: "include" });
@@ -210,28 +247,38 @@ async function loadQueue() {
       showToast("Очередь: ошибка ответа сервера", "error");
       return;
     }
-    document.getElementById("queueStatus").textContent =
-      "очередь: " +
-      d.waiting +
-      " | в работе: " +
-      d.active +
-      (d.failed ? " | ошибок: " + d.failed : "");
+    document.getElementById("q-waiting").textContent = d.waiting;
+    document.getElementById("q-active").textContent = d.active;
+    document.getElementById("q-delayed").textContent = d.delayed;
+    document.getElementById("queueStatus").textContent = d.failed
+      ? `Ошибок в очереди: ${d.failed}`
+      : "Очередь без ошибок";
+    document.getElementById("lastUpdate").textContent =
+      "Обновлено " + new Date().toLocaleTimeString("ru");
   } catch (e) {
     console.error(e);
     showToast("Очередь: нет сети", "error");
   } finally {
     loadQueueBusy = false;
+    if (loadQueuePending) {
+      loadQueuePending = false;
+      loadQueue();
+    }
   }
 }
 async function loadStats() {
-  if (docHidden() || loadStatsBusy) return;
+  if (docHidden()) return;
+  if (loadStatsBusy) {
+    loadStatsPending = true;
+    return;
+  }
   loadStatsBusy = true;
   try {
     const r = await fetch("/api/stats", { credentials: "include" });
     const d = await r.json();
     if (!r.ok) {
       setDashBanner(
-        "Статистика не загрузилась (401/403 — перелогиньтесь в дашборд).",
+        "Статистика не загрузилась. Проверьте доступ к панели.",
       );
       document.getElementById("kpi-row")?.classList.remove("kpi-row--loading");
       return;
@@ -251,7 +298,7 @@ async function loadStats() {
         : d.traffic + " MB";
     document.getElementById("k-avgtime").textContent = fmtMs(d.avgDuration);
     document.getElementById("lastUpdate").textContent =
-      "обновлено " + new Date().toLocaleTimeString("ru");
+      "Обновлено " + new Date().toLocaleTimeString("ru");
     if (d.trafficByPlatform && d.trafficByPlatform.length) {
       document.getElementById("trafficByPlatform").innerHTML =
         d.trafficByPlatform
@@ -262,7 +309,7 @@ async function loadStats() {
           .join("");
     } else {
       document.getElementById("trafficByPlatform").innerHTML =
-        "<div class='row'><span>—</span></div>";
+        "<div class='row'><span>Нет данных</span></div>";
     }
     if (d.avgByPlatform && d.avgByPlatform.length) {
       document.getElementById("avgByPlatform").innerHTML = d.avgByPlatform
@@ -273,7 +320,7 @@ async function loadStats() {
         .join("");
     } else {
       document.getElementById("avgByPlatform").innerHTML =
-        "<div class='row'><span>—</span></div>";
+        "<div class='row'><span>Нет данных</span></div>";
     }
     if (d.topUsers && d.topUsers.length) {
       document.getElementById("topUsers").innerHTML = d.topUsers
@@ -288,7 +335,7 @@ async function loadStats() {
         .join("");
     } else {
       document.getElementById("topUsers").innerHTML =
-        "<div class='row'><span>—</span></div>";
+        "<div class='row'><span>Нет данных</span></div>";
     }
   } catch (e) {
     console.error(e);
@@ -296,11 +343,19 @@ async function loadStats() {
     document.getElementById("kpi-row")?.classList.remove("kpi-row--loading");
   } finally {
     loadStatsBusy = false;
+    if (loadStatsPending) {
+      loadStatsPending = false;
+      loadStats();
+    }
   }
 }
 
 async function loadCharts() {
-  if (docHidden() || loadChartsBusy) return;
+  if (docHidden()) return;
+  if (loadChartsBusy) {
+    loadChartsPending = true;
+    return;
+  }
   if (typeof Chart === "undefined") {
     if (!chartMissingLogged) {
       chartMissingLogged = true;
@@ -333,6 +388,10 @@ async function loadCharts() {
     showToast("Графики: ошибка сети", "error");
   } finally {
     loadChartsBusy = false;
+    if (loadChartsPending) {
+      loadChartsPending = false;
+      loadCharts();
+    }
   }
 }
 function renderTrafficChart(data) {
@@ -352,8 +411,8 @@ function renderTrafficChart(data) {
         {
           label: "Трафик (MB)",
           data: mbData,
-          backgroundColor: "rgba(6,182,212,.6)",
-          borderRadius: 4,
+          backgroundColor: chartAlpha(chartPalette.info, 0.68),
+          borderRadius: 6,
         },
       ],
     },
@@ -381,14 +440,14 @@ function renderDailyChart(data) {
         {
           label: "Успех",
           data: data.map((d) => d.success || 0),
-          backgroundColor: "rgba(34,197,94,.6)",
-          borderRadius: 4,
+          backgroundColor: chartAlpha(chartPalette.success, 0.74),
+          borderRadius: 5,
         },
         {
           label: "Ошибки",
           data: data.map((d) => d.failed || 0),
-          backgroundColor: "rgba(239,68,68,.6)",
-          borderRadius: 4,
+          backgroundColor: chartAlpha(chartPalette.danger, 0.68),
+          borderRadius: 5,
         },
       ],
     },
@@ -398,7 +457,7 @@ function renderDailyChart(data) {
         ...chartDefaults.plugins,
         legend: {
           display: true,
-          labels: { color: "#94a3b8", font: { size: 11 } },
+          labels: { color: chartPalette.muted, font: { size: 11 } },
         },
       },
       scales: {
@@ -441,12 +500,12 @@ function renderHourlyChart(data) {
         {
           label: "Запросы",
           data: full.map((d) => d.count),
-          borderColor: "#6366f1",
-          backgroundColor: "rgba(99,102,241,.1)",
+          borderColor: chartPalette.brand,
+          backgroundColor: chartAlpha(chartPalette.brand, 0.12),
           fill: true,
           tension: 0.3,
           pointRadius: 3,
-          pointBackgroundColor: "#6366f1",
+          pointBackgroundColor: chartPalette.brand,
         },
       ],
     },
@@ -474,12 +533,12 @@ function renderPerfChart(data) {
         {
           label: "Ср. время (ms)",
           data: data.map((d) => Math.round(d.avg_duration || 0)),
-          borderColor: "#f59e0b",
-          backgroundColor: "rgba(245,158,11,.1)",
+          borderColor: chartPalette.warning,
+          backgroundColor: chartAlpha(chartPalette.warning, 0.12),
           fill: true,
           tension: 0.3,
           pointRadius: 3,
-          pointBackgroundColor: "#f59e0b",
+          pointBackgroundColor: chartPalette.warning,
         },
       ],
     },
@@ -501,7 +560,14 @@ function renderPlatformChart(data) {
     }
     return;
   }
-  const colors = ["#6366f1", "#ef4444", "#06b6d4", "#f59e0b", "#22c55e"];
+  const colors = [
+    chartPalette.brand,
+    chartPalette.info,
+    chartPalette.success,
+    chartPalette.warning,
+    chartPalette.cache,
+    chartPalette.danger,
+  ];
   const cfg = {
     type: "doughnut",
     data: {
@@ -510,7 +576,8 @@ function renderPlatformChart(data) {
         {
           data: data.map((d) => Number(d.count)),
           backgroundColor: colors.slice(0, data.length),
-          borderWidth: 0,
+          borderColor: chartPalette.surface,
+          borderWidth: 3,
         },
       ],
     },
@@ -520,7 +587,7 @@ function renderPlatformChart(data) {
       plugins: {
         legend: {
           position: "bottom",
-          labels: { color: "#94a3b8", font: { size: 11 }, padding: 14 },
+          labels: { color: chartPalette.muted, font: { size: 11 }, padding: 14 },
         },
       },
     },
@@ -542,11 +609,11 @@ function renderStatusChart(data) {
     return;
   }
   const cmap = {
-    success: "#22c55e",
-    cached: "#a78bfa",
-    compressed: "#f59e0b",
-    too_large: "#06b6d4",
-    failed: "#ef4444",
+    success: chartPalette.success,
+    cached: chartPalette.cache,
+    compressed: chartPalette.warning,
+    too_large: chartPalette.info,
+    failed: chartPalette.danger,
   };
   const nmap = {
     success: "Успех",
@@ -562,8 +629,9 @@ function renderStatusChart(data) {
       datasets: [
         {
           data: data.map((d) => Number(d.count)),
-          backgroundColor: data.map((d) => cmap[d.status] || "#64748b"),
-          borderWidth: 0,
+          backgroundColor: data.map((d) => cmap[d.status] || chartPalette.muted),
+          borderColor: chartPalette.surface,
+          borderWidth: 3,
         },
       ],
     },
@@ -573,7 +641,7 @@ function renderStatusChart(data) {
       plugins: {
         legend: {
           position: "bottom",
-          labels: { color: "#94a3b8", font: { size: 11 }, padding: 14 },
+          labels: { color: chartPalette.muted, font: { size: 11 }, padding: 14 },
         },
       },
     },
@@ -622,7 +690,7 @@ async function loadRecent() {
         const url = j.url || "";
         const urlDisplay = url
           ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(url)}</a>`
-          : "—";
+          : "-";
         const fullError = j.error_message ? escapeHtml(String(j.error_message)) : "";
         const err = fullError
           ? escapeHtml(String(j.error_message).slice(0, 80))
@@ -632,7 +700,7 @@ async function loadRecent() {
           j.username ||
           (j.user_id ? "id" + j.user_id : "") ||
           j.chat_id ||
-          "—";
+          "-";
         const userLink = j.userProfileUrl
           ? `<a href="${escapeHtml(j.userProfileUrl)}" target="_blank" rel="noopener" class="user-name">${escapeHtml(userName)}</a>`
           : `<span class="user-name">${escapeHtml(userName)}</span>`;
@@ -641,7 +709,7 @@ async function loadRecent() {
           ? `<img class="user-avatar" src="/api/avatar/${j.user_id}" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.classList.add('user-avatar-placeholder--visible');" /><span class="user-avatar-placeholder" aria-hidden="true">${avInit}</span>`
           : `<span class="user-avatar-placeholder user-avatar-placeholder--visible user-avatar-placeholder--empty">${avInit}</span>`;
         const chatTitle =
-          j.chatTitle || (j.chat_id ? "Chat " + j.chat_id : "—");
+          j.chatTitle || (j.chat_id ? "Чат " + j.chat_id : "-");
         const chatLink = j.chatUrl
           ? `<a href="${escapeHtml(j.chatUrl)}" target="_blank" rel="noopener">${escapeHtml(chatTitle)}</a>`
           : escapeHtml(chatTitle);
@@ -659,7 +727,7 @@ async function loadRecent() {
                 : `${cp.imageCount} фото`;
           cacheCell = `<button type="button" class="btn-cache-view" data-job-id="${j.id}" data-kind="${cp.kind}" data-image-count="${cp.imageCount || 0}">${escapeHtml(lbl)}</button>`;
         } else {
-          cacheCell = `<span class="cache-miss-wrap"><span class="cache-miss" title="Нет в кэше или истёк срок (до ~24 ч)">—</span><button type="button" class="btn-cache-rehydrate" title="Восстановить связь с кэшем на диске (обновить Redis)" data-job-id="${j.id}" aria-label="Восстановить кэш">↻</button></span>`;
+          cacheCell = `<span class="cache-miss-wrap"><span class="cache-miss" title="Нет в кэше или истёк срок (до ~24 ч)">-</span><button type="button" class="btn-cache-rehydrate" title="Восстановить связь с кэшем на диске" data-job-id="${j.id}" aria-label="Восстановить кэш"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M16 10a6 6 0 1 1-1.5-4M16 4v4h-4" /></svg></button></span>`;
         }
         return `<tr>
 <td>${fmtTime(j.ts)}</td>
@@ -671,7 +739,7 @@ async function loadRecent() {
 <td>${fmtBytes(j.bytes)}</td>
 <td>${fmtMs(j.duration_ms)}</td>
 <td class="cache-cell">${cacheCell}</td>
-<td class="error-cell" title="${fullError}">${err || "—"}</td>
+<td class="error-cell" title="${fullError}">${err || "-"}</td>
     </tr>`;
       })
       .join("")
@@ -722,12 +790,7 @@ document.getElementById("f-search").oninput = () => {
   }, 400);
 };
 
-let cacheModalBlobUrls = [];
-
-function revokeCacheModalUrls() {
-  cacheModalBlobUrls.forEach((u) => URL.revokeObjectURL(u));
-  cacheModalBlobUrls = [];
-}
+let modalNavigate = null;
 
 function closeCacheModal() {
   removeModalFocusTrap();
@@ -739,9 +802,11 @@ function closeCacheModal() {
   if (v) {
     v.pause();
     v.removeAttribute("src");
+    v.load();
   }
-  body.innerHTML = '<span class="cache-modal-loading">Загрузка…</span>';
-  revokeCacheModalUrls();
+  body.innerHTML = '<span class="cache-modal-loading">Откройте медиа из журнала</span>';
+  document.body.classList.remove("modal-open");
+  modalNavigate = null;
   if (focusBeforeModal && typeof focusBeforeModal.focus === "function") {
     try {
       focusBeforeModal.focus();
@@ -750,118 +815,228 @@ function closeCacheModal() {
   focusBeforeModal = null;
 }
 
-async function openCacheModal(jobId, kind, imageCount) {
+function openCacheModal(jobId, kind, imageCount) {
   focusBeforeModal = document.activeElement;
-  revokeCacheModalUrls();
   const overlay = document.getElementById("cache-modal-overlay");
   const body = document.getElementById("cache-modal-body");
   overlay.classList.add("open");
   overlay.setAttribute("aria-hidden", "false");
-  body.innerHTML = '<span class="cache-modal-loading">Загрузка…</span>';
+  document.body.classList.add("modal-open");
+  document.getElementById("cache-modal-title").textContent =
+    kind === "video" ? "Просмотр видео" : "Галерея изображений";
+  document.getElementById("cache-modal-meta").textContent =
+    kind === "video"
+      ? `Запрос ${jobId} · видео из кэша`
+      : `${Math.max(1, Number(imageCount) || 1)} изображений · запрос ${jobId}`;
+  body.innerHTML = '<span class="cache-modal-loading">Открываем медиа</span>';
   installModalFocusTrap();
   requestAnimationFrame(() => focusModalClose());
 
-  try {
-    if (kind === "video") {
-      const r = await fetch(`/api/admin/cache/${jobId}/video`, {
-        credentials: "include",
-      });
-      if (!r.ok) {
-        body.innerHTML = `<span class="cache-miss">Не удалось загрузить (HTTP ${r.status})</span>`;
-        requestAnimationFrame(() => focusModalClose());
-        return;
-      }
-      const blob = await r.blob();
-      const url = URL.createObjectURL(blob);
-      cacheModalBlobUrls.push(url);
-      body.innerHTML = "";
-      const vid = document.createElement("video");
-      vid.controls = true;
-      vid.playsInline = true;
-      vid.tabIndex = 0;
-      vid.src = url;
-      body.appendChild(vid);
-      requestAnimationFrame(() => {
-        try {
-          vid.focus();
-        } catch (_) {
-          focusModalClose();
-        }
-      });
+  const count = Math.max(1, Number(imageCount) || 1);
+  let current = 0;
+  const viewer = document.createElement("div");
+  viewer.className = `media-viewer media-viewer--${kind === "video" ? "video" : "images"}`;
+  const stage = document.createElement("div");
+  stage.className = "media-stage";
+  stage.tabIndex = 0;
+  stage.setAttribute("aria-label", kind === "video" ? "Видеоплеер" : "Просмотр изображения");
+  const toolbar = document.createElement("div");
+  toolbar.className = "media-toolbar";
+  const controls = document.createElement("div");
+  controls.className = "media-toolbar-group";
+  const actions = document.createElement("div");
+  actions.className = "media-toolbar-group";
+  let thumbnailStrip = null;
+  const download = document.createElement("a");
+  download.className = "button media-download";
+  download.textContent = kind === "video" ? "Скачать видео" : "Скачать изображение";
+  download.setAttribute("download", "");
+  const fullscreen = document.createElement("button");
+  fullscreen.type = "button";
+  fullscreen.className = "button button-quiet";
+  fullscreen.textContent = "На весь экран";
+  fullscreen.addEventListener("click", () => {
+    if (document.fullscreenElement) {
+      document.exitFullscreen?.();
     } else {
-      const n = Math.max(1, Number(imageCount) || 1);
-      let current = 0;
-      let lastImgUrl = null;
-      const wrap = document.createElement("div");
-      wrap.className = "cache-carousel";
-      const img = document.createElement("img");
-      img.alt = "";
-      const nav = document.createElement("div");
-      nav.className = "cache-carousel-nav";
-      const prev = document.createElement("button");
-      prev.type = "button";
-      prev.textContent = "← Назад";
-      const label = document.createElement("span");
-      label.style.cssText =
-        "align-self:center;color:var(--muted);font-size:0.8rem;padding:0 8px";
-      const next = document.createElement("button");
-      next.type = "button";
-      next.textContent = "Вперёд →";
-      const dots = document.createElement("div");
-      dots.className = "cache-carousel-dots";
-
-      async function showIndex(i) {
-        if (i < 0 || i >= n) return;
-        current = i;
-        const r = await fetch(`/api/admin/cache/${jobId}/image/${i}`, {
-          credentials: "include",
-        });
-        if (!r.ok) {
-          img.removeAttribute("src");
-          img.alt = "Ошибка загрузки";
-          return;
-        }
-        const blob = await r.blob();
-        if (lastImgUrl) {
-          URL.revokeObjectURL(lastImgUrl);
-          const ix = cacheModalBlobUrls.indexOf(lastImgUrl);
-          if (ix >= 0) cacheModalBlobUrls.splice(ix, 1);
-        }
-        lastImgUrl = URL.createObjectURL(blob);
-        cacheModalBlobUrls.push(lastImgUrl);
-        img.src = lastImgUrl;
-        label.textContent = `${i + 1} / ${n}`;
-        prev.disabled = i <= 0;
-        next.disabled = i >= n - 1;
-        dots.querySelectorAll("span").forEach((d, di) => {
-          d.classList.toggle("active", di === i);
-        });
-      }
-
-      prev.onclick = () => showIndex(current - 1);
-      next.onclick = () => showIndex(current + 1);
-      for (let di = 0; di < n; di++) {
-        const dot = document.createElement("span");
-        dot.onclick = () => showIndex(di);
-        if (di === 0) dot.classList.add("active");
-        dots.appendChild(dot);
-      }
-      nav.appendChild(prev);
-      nav.appendChild(label);
-      nav.appendChild(next);
-      wrap.appendChild(img);
-      wrap.appendChild(nav);
-      wrap.appendChild(dots);
-      body.innerHTML = "";
-      body.appendChild(wrap);
-      await showIndex(0);
-      requestAnimationFrame(() => focusModalClose());
+      stage.requestFullscreen?.();
     }
-  } catch (e) {
-    console.error(e);
-    document.getElementById("cache-modal-body").innerHTML =
-      '<span class="cache-miss">Ошибка сети</span>';
-    requestAnimationFrame(() => focusModalClose());
+  });
+  actions.append(download, fullscreen);
+
+  if (kind === "video") {
+    const videoUrl = `/api/admin/cache/${encodeURIComponent(jobId)}/video`;
+    const video = document.createElement("video");
+    video.controls = true;
+    video.playsInline = true;
+    video.preload = "metadata";
+    video.tabIndex = 0;
+    video.src = videoUrl;
+    video.setAttribute("aria-label", "Видео из кэша");
+    video.addEventListener("error", () => {
+      const message = document.createElement("p");
+      message.className = "media-stage-error";
+      message.textContent = "Не удалось открыть видео из кэша.";
+      stage.replaceChildren(message);
+    });
+    download.href = videoUrl;
+    download.download = `media-${jobId}.mp4`;
+    stage.appendChild(video);
+    controls.appendChild(document.createElement("span"));
+  } else {
+    const image = document.createElement("img");
+    image.alt = "";
+    image.decoding = "async";
+    image.addEventListener("click", () => {
+      const zoomed = image.classList.toggle("is-zoomed");
+      stage.classList.toggle("is-zoomed", zoomed);
+      zoomButton.setAttribute("aria-pressed", String(zoomed));
+      zoomButton.textContent = zoomed ? "Уменьшить" : "Увеличить";
+    });
+    image.addEventListener("error", () => {
+      const message = document.createElement("p");
+      message.className = "media-stage-error";
+      message.textContent = "Не удалось загрузить это изображение из кэша.";
+      stage.replaceChildren(message);
+    });
+
+    const counter = document.createElement("span");
+    counter.className = "media-counter";
+    counter.setAttribute("aria-live", "polite");
+    const previous = document.createElement("button");
+    previous.type = "button";
+    previous.className = "button button-quiet";
+    previous.textContent = "Назад";
+    previous.setAttribute("aria-label", "Предыдущее изображение");
+    const next = document.createElement("button");
+    next.type = "button";
+    next.className = "button button-quiet";
+    next.textContent = "Вперёд";
+    next.setAttribute("aria-label", "Следующее изображение");
+    const zoomButton = document.createElement("button");
+    zoomButton.type = "button";
+    zoomButton.className = "button button-quiet";
+    zoomButton.textContent = "Увеличить";
+    zoomButton.setAttribute("aria-pressed", "false");
+    zoomButton.addEventListener("click", () => image.click());
+    previous.addEventListener("click", () => showIndex(current - 1));
+    next.addEventListener("click", () => showIndex(current + 1));
+    controls.append(previous, counter, next, zoomButton);
+
+    const thumbnails = document.createElement("div");
+    thumbnails.className = "media-thumbnails";
+    thumbnails.setAttribute("aria-label", "Миниатюры изображений");
+    thumbnailStrip = thumbnails;
+    const thumbnailButtons = [];
+    for (let index = 0; index < count; index++) {
+      const thumbnail = document.createElement("button");
+      thumbnail.type = "button";
+      thumbnail.className = "media-thumbnail";
+      thumbnail.setAttribute("aria-label", `Показать изображение ${index + 1}`);
+      thumbnail.setAttribute("aria-current", index === 0 ? "true" : "false");
+      const thumbImage = document.createElement("img");
+      thumbImage.alt = "";
+      thumbImage.loading = "lazy";
+      thumbImage.src = `/api/admin/cache/${encodeURIComponent(jobId)}/image/${index}`;
+      thumbnail.appendChild(thumbImage);
+      thumbnail.addEventListener("click", () => showIndex(index));
+      thumbnails.appendChild(thumbnail);
+      thumbnailButtons.push(thumbnail);
+    }
+
+    function showIndex(index) {
+      if (index < 0 || index >= count) return;
+      current = index;
+      if (!image.isConnected) stage.replaceChildren(image);
+      const imageUrl = `/api/admin/cache/${encodeURIComponent(jobId)}/image/${index}`;
+      image.classList.remove("is-zoomed");
+      stage.classList.remove("is-zoomed");
+      zoomButton.setAttribute("aria-pressed", "false");
+      zoomButton.textContent = "Увеличить";
+      image.alt = `Изображение ${index + 1} из ${count}`;
+      image.src = imageUrl;
+      counter.textContent = `${index + 1} из ${count}`;
+      download.href = imageUrl;
+      download.download = `media-${jobId}-${index + 1}.jpg`;
+      previous.disabled = index === 0;
+      next.disabled = index === count - 1;
+      thumbnailButtons.forEach((button, thumbIndex) => {
+        button.setAttribute("aria-current", String(thumbIndex === index));
+        if (thumbIndex === index) button.scrollIntoView({ block: "nearest", inline: "nearest" });
+      });
+    }
+
+    modalNavigate = (direction) => showIndex(current + direction);
+    stage.appendChild(image);
+    showIndex(0);
+  }
+
+  toolbar.append(controls, actions);
+  if (thumbnailStrip) viewer.append(stage, thumbnailStrip, toolbar);
+  else viewer.append(stage, toolbar);
+  body.replaceChildren(viewer);
+  requestAnimationFrame(() => focusModalClose());
+}
+
+function setLiveStatus(state, label) {
+  const status = document.getElementById("liveStatus");
+  status.dataset.state = state;
+  document.getElementById("liveStatusLabel").textContent = label;
+}
+
+function scheduleDashboardRefresh(scopes) {
+  scopes.forEach((scope) => pendingScopes.add(scope));
+  if (refreshTimer) return;
+  refreshTimer = setTimeout(() => {
+    refreshTimer = null;
+    const nextScopes = new Set(pendingScopes);
+    pendingScopes.clear();
+    if (nextScopes.has("stats")) loadStats();
+    if (nextScopes.has("charts")) loadCharts();
+    if (nextScopes.has("recent")) loadRecent();
+    if (nextScopes.has("queue")) loadQueue();
+  }, 180);
+}
+
+function connectDashboardEvents() {
+  if (typeof EventSource === "undefined") {
+    setLiveStatus("error", "Push недоступен");
+    return;
+  }
+  if (eventSource && eventSource.readyState !== EventSource.CLOSED) return;
+
+  setLiveStatus("connecting", "Подключение");
+  eventSource = new EventSource("/api/admin/events");
+  eventSource.onopen = () => setLiveStatus("connected", "Обновления онлайн");
+  eventSource.addEventListener("connected", () => {
+    setLiveStatus("connected", "Обновления онлайн");
+  });
+  eventSource.addEventListener("dashboard-update", (event) => {
+    try {
+      const payload = JSON.parse(event.data);
+      const scopes = Array.isArray(payload.scopes) ? payload.scopes : [];
+      scheduleDashboardRefresh(scopes);
+    } catch (error) {
+      console.error("Dashboard event could not be parsed", error);
+    }
+  });
+  eventSource.onerror = () => {
+    setLiveStatus(
+      eventSource.readyState === EventSource.CLOSED ? "error" : "reconnecting",
+      eventSource.readyState === EventSource.CLOSED
+        ? "Нет соединения"
+        : "Переподключение",
+    );
+  };
+}
+
+async function refreshDashboardNow() {
+  const button = document.getElementById("refreshNow");
+  button.disabled = true;
+  try {
+    await Promise.all([loadStats(), loadQueue(), loadCharts(), loadRecent()]);
+  } finally {
+    button.disabled = false;
   }
 }
 
@@ -913,22 +1088,26 @@ window.onload = () => {
     });
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") closeCacheModal();
+    if (!modalNavigate || !document.getElementById("cache-modal-overlay").classList.contains("open")) return;
+    if (e.key === "ArrowLeft") {
+      e.preventDefault();
+      modalNavigate(-1);
+    } else if (e.key === "ArrowRight") {
+      e.preventDefault();
+      modalNavigate(1);
+    }
+  });
+
+  document.getElementById("refreshNow").addEventListener("click", refreshDashboardNow);
+  document.addEventListener("visibilitychange", () => {
+    if (docHidden()) return;
+    if (!eventSource || eventSource.readyState === EventSource.CLOSED) connectDashboardEvents();
+    scheduleDashboardRefresh(["stats", "queue", "charts", "recent"]);
   });
 
   loadStats();
   loadQueue();
   loadCharts();
   loadRecent();
-  setInterval(() => {
-    if (!docHidden()) loadStats();
-  }, 15000);
-  setInterval(() => {
-    if (!docHidden()) loadQueue();
-  }, 5000);
-  setInterval(() => {
-    if (!docHidden()) loadCharts();
-  }, 30000);
-  setInterval(() => {
-    if (!docHidden()) loadRecent();
-  }, 15000);
+  connectDashboardEvents();
 };

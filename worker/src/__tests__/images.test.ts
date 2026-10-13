@@ -78,6 +78,23 @@ describe("Telegram photo normalization (requires ffmpeg/ffprobe)", () => {
     expect(image.width + image.height).toBeLessThan(10000);
   });
 
+  it("composites transparent sources on white instead of black", async () => {
+    const file = fixture();
+    const pixelFile = path.join(path.dirname(file), "pixel.ppm");
+    await runProcess("ffmpeg", [
+      "-v", "error", "-f", "lavfi", "-i", "color=c=red:s=16x16",
+      "-frames:v", "1", "-vf", "format=rgba,colorchannelmixer=aa=0",
+      "-vcodec", "png", "-y", file,
+    ]);
+    await normalizeImageForTelegram(file);
+    await runProcess("ffmpeg", [
+      "-v", "error", "-i", file, "-frames:v", "1", "-vf", "scale=1:1",
+      "-vcodec", "ppm", "-y", pixelFile,
+    ]);
+    const pixel = readFileSync(pixelFile).subarray(-3);
+    expect([...pixel].every((channel) => channel >= 240)).toBe(true);
+  });
+
   it("rejects corrupted WebP without replacing the source or leaving temporary files", async () => {
     const file = fixture();
     const corrupt = Buffer.from("RIFFxxxxWEBPinvalid");

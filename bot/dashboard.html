@@ -2,215 +2,173 @@
 <html lang="ru">
   <head>
     <meta charset="utf-8" />
-    <title>TikTok Bot — Dashboard</title>
+    <title>Медиа-бот | Панель управления</title>
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <link
-      rel="icon"
-      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E"
-    />
+    <meta name="theme-color" content="#f3f1eb" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E" />
     <link rel="stylesheet" href="/assets/dashboard.css" />
     <script src="/vendor/chart.umd.js"></script>
   </head>
 
   <body>
     <div class="shell">
-      <header>
-        <h1>TikTok Bot Dashboard</h1>
-        <div class="header-right">
-          <div class="queue-status" id="queueStatus">очередь: —</div>
-          <div
-            class="live-dot"
-            role="status"
-            aria-label="Автообновление данных включено"
-          ></div>
-          <span class="refresh-label" id="lastUpdate">загрузка...</span>
+      <header class="topbar">
+        <a class="brand" href="/dashboard" aria-label="Медиа-бот, на главную">
+          <span class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 32 32" fill="none">
+              <path d="M7 8.5h18v3H7zm0 6h12v3H7zm0 6h18v3H7z" fill="currentColor" />
+              <circle cx="24" cy="16" r="4" fill="currentColor" />
+            </svg>
+          </span>
+          <span class="brand-copy"><strong>Медиа-бот</strong><small>операционная панель</small></span>
+        </a>
+        <div class="header-actions">
+          <div class="live-status" id="liveStatus" data-state="connecting" role="status" aria-live="polite">
+            <span class="live-indicator" aria-hidden="true"></span>
+            <span id="liveStatusLabel">Подключение</span>
+          </div>
+          <span class="last-update" id="lastUpdate">Данные загружаются</span>
+          <button class="button button-quiet refresh-button" id="refreshNow" type="button">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M16 10a6 6 0 1 1-1.5-4M16 4v4h-4" /></svg>
+            Обновить
+          </button>
         </div>
       </header>
 
-      <div
-        id="dash-banner"
-        class="dash-banner dash-banner--hidden"
-        role="alert"
-      ></div>
+      <main>
+        <div id="dash-banner" class="dash-banner dash-banner--hidden" role="alert"></div>
 
-      <!-- KPI -->
-      <div id="kpi-row" class="kpi-row kpi-row--loading">
-        <div class="kpi">
-          <div class="kpi-val kpi-accent" id="k-daily">—</div>
-          <div class="kpi-label">За 24 ч</div>
-        </div>
-        <div class="kpi">
-          <div class="kpi-val kpi-accent" id="k-weekly">—</div>
-          <div class="kpi-label">За 7 дней</div>
-        </div>
-        <div class="kpi">
-          <div class="kpi-val kpi-accent" id="k-monthly">—</div>
-          <div class="kpi-label">За 30 дней</div>
-        </div>
-        <div class="kpi">
-          <div class="kpi-val" id="k-total">—</div>
-          <div class="kpi-label">Всего</div>
-        </div>
-        <div class="kpi">
-          <div class="kpi-val kpi-green" id="k-success">—</div>
-          <div class="kpi-label">Успешные</div>
-        </div>
-        <div class="kpi">
-          <div class="kpi-val" id="k-cached" style="color: #a78bfa">—</div>
-          <div class="kpi-label">Из кэша</div>
-        </div>
-        <div class="kpi">
-          <div class="kpi-val kpi-red" id="k-failed">—</div>
-          <div class="kpi-label">Ошибки</div>
-        </div>
-        <div class="kpi">
-          <div class="kpi-val kpi-cyan" id="k-traffic">—</div>
-          <div class="kpi-label">Трафик</div>
-        </div>
-        <div class="kpi">
-          <div class="kpi-val kpi-amber" id="k-avgtime">—</div>
-          <div class="kpi-label">Ср. время</div>
-        </div>
-      </div>
-
-      <!-- Charts -->
-      <div class="charts-grid">
-        <div class="chart-card chart-full">
-          <h3>Запросы по дням (30д)</h3>
-          <canvas id="dailyChart"></canvas>
-        </div>
-        <div class="chart-card">
-          <h3>Активность за 24ч (по часам)</h3>
-          <canvas id="hourlyChart"></canvas>
-        </div>
-        <div class="chart-card">
-          <h3>Среднее время обработки (по дням)</h3>
-          <canvas id="perfChart"></canvas>
-        </div>
-      </div>
-
-      <div class="smalls">
-        <div class="chart-card">
-          <h3>Платформы</h3>
-          <canvas id="platformChart"></canvas>
-        </div>
-        <div class="chart-card">
-          <h3>Статусы</h3>
-          <canvas id="statusChart"></canvas>
-        </div>
-      </div>
-
-      <div class="charts-grid">
-        <div class="chart-card chart-full">
-          <h3>Трафик по дням (30д)</h3>
-          <canvas id="trafficChart"></canvas>
-        </div>
-      </div>
-
-      <div class="info-cards">
-        <div class="chart-card">
-          <h3>Трафик по платформам</h3>
-          <div id="trafficByPlatform" class="platform-list"></div>
-        </div>
-        <div class="chart-card">
-          <h3>Ср. время по платформам</h3>
-          <div id="avgByPlatform" class="platform-list"></div>
-        </div>
-        <div class="chart-card">
-          <h3>Топ пользователей</h3>
-          <div id="topUsers" class="platform-list"></div>
-        </div>
-      </div>
-
-      <!-- Recent jobs table -->
-      <div class="table-wrap">
-        <div class="table-head">
-          <h3>Последние запросы</h3>
-          <div class="filters">
-            <select id="f-status">
-              <option value="">Все статусы</option>
-              <option value="success">Успех</option>
-              <option value="cached">Кэш</option>
-              <option value="compressed">Сжатие</option>
-              <option value="too_large">Превышение</option>
-              <option value="failed">Ошибка</option>
-            </select>
-            <select id="f-platform">
-              <option value="">Все платформы</option>
-              <option value="tiktok">TikTok</option>
-              <option value="youtube">YouTube</option>
-              <option value="vk">VK</option>
-              <option value="instagram">Instagram</option>
-              <option value="twitter">X / Twitter</option>
-              <option value="bluesky">Bluesky</option>
-              <option value="reddit">Reddit</option>
-              <option value="pinterest">Pinterest</option>
-              <option value="flickr">Flickr</option>
-              <option value="tumblr">Tumblr</option>
-              <option value="facebook">Facebook</option>
-            </select>
-            <input
-              id="f-search"
-              type="search"
-              aria-label="Поиск по запросам"
-              placeholder="Ссылка, ошибка, пользователь, ID чата"
-            />
+        <section class="hero-panel" aria-labelledby="hero-title">
+          <div class="hero-copy">
+            <p class="eyebrow">Медиа · очередь · доставка</p>
+            <h1 id="hero-title">Состояние сервиса</h1>
+            <p class="hero-description">Работа бота и свежие результаты обработки ссылок.</p>
           </div>
-        </div>
-        <table>
-          <thead>
-            <tr>
-              <th>Время</th>
-              <th>Пользователь</th>
-              <th>Чат</th>
-              <th>Платформа</th>
-              <th>Ссылка</th>
-              <th>Статус</th>
-              <th>Размер</th>
-              <th>Время обр.</th>
-              <th>Кэш</th>
-              <th>Ошибка</th>
-            </tr>
-          </thead>
-          <tbody id="tbody"></tbody>
-        </table>
-        <div class="pager">
-          <button id="pg-prev" disabled>← Назад</button>
-          <span id="pg-info">—</span>
-          <button id="pg-next" disabled>Вперёд →</button>
-        </div>
-      </div>
+          <div id="kpi-row" class="hero-metric kpi-row--loading">
+            <span class="hero-value" id="k-daily">-</span>
+            <span class="hero-label">заявок за 24 часа</span>
+            <span class="hero-note">За последние сутки</span>
+          </div>
+          <div class="queue-summary" aria-label="Текущее состояние очереди">
+            <div class="queue-summary-heading">
+              <span class="section-kicker">Очередь</span>
+              <span class="queue-pulse" aria-hidden="true"></span>
+            </div>
+            <div class="queue-metrics">
+              <div><strong id="q-waiting">-</strong><span>ожидают</span></div>
+              <div><strong id="q-active">-</strong><span>в работе</span></div>
+              <div><strong id="q-delayed">-</strong><span>отложены</span></div>
+            </div>
+            <div class="queue-footer" id="queueStatus" aria-live="polite">Очередь подключается</div>
+          </div>
+        </section>
+
+        <section class="metrics-section" aria-label="Сводные показатели">
+          <div class="section-heading compact-heading">
+            <div><p class="eyebrow">Сводка</p><h2>За период</h2></div>
+            <span class="section-caption">Обновляется вместе с журналом событий</span>
+          </div>
+          <div class="kpi-row kpi-row--secondary">
+            <article class="kpi"><span class="kpi-label">7 дней</span><strong class="kpi-val" id="k-weekly">-</strong></article>
+            <article class="kpi"><span class="kpi-label">30 дней</span><strong class="kpi-val" id="k-monthly">-</strong></article>
+            <article class="kpi"><span class="kpi-label">Всего запросов</span><strong class="kpi-val" id="k-total">-</strong></article>
+            <article class="kpi kpi--success"><span class="kpi-label">Успешно</span><strong class="kpi-val" id="k-success">-</strong></article>
+            <article class="kpi kpi--cache"><span class="kpi-label">Из кэша</span><strong class="kpi-val" id="k-cached">-</strong></article>
+            <article class="kpi kpi--danger"><span class="kpi-label">Ошибки</span><strong class="kpi-val" id="k-failed">-</strong></article>
+            <article class="kpi kpi--traffic"><span class="kpi-label">Трафик</span><strong class="kpi-val" id="k-traffic">-</strong></article>
+            <article class="kpi kpi--time"><span class="kpi-label">Среднее время</span><strong class="kpi-val" id="k-avgtime">-</strong></article>
+          </div>
+        </section>
+
+        <section class="analytics-section" aria-labelledby="analytics-title">
+          <div class="section-heading">
+            <div><p class="eyebrow">Показатели</p><h2 id="analytics-title">Динамика обработки</h2></div>
+            <span class="section-caption">Последние 30 дней</span>
+          </div>
+          <div class="charts-grid charts-primary">
+            <article class="chart-card chart-full chart-card--lead">
+              <div class="card-heading"><div><span class="section-kicker">Объём</span><h3>Запросы по дням</h3></div><span class="chart-unit">запросов</span></div>
+              <div class="chart-frame chart-frame--lead"><canvas id="dailyChart" aria-label="Запросы по дням за 30 дней" role="img"></canvas></div>
+            </article>
+            <article class="chart-card">
+              <div class="card-heading"><div><span class="section-kicker">Сегодня</span><h3>Активность по часам</h3></div><span class="chart-unit">24 часа</span></div>
+              <div class="chart-frame"><canvas id="hourlyChart" aria-label="Активность по часам за сутки" role="img"></canvas></div>
+            </article>
+            <article class="chart-card">
+              <div class="card-heading"><div><span class="section-kicker">Скорость</span><h3>Среднее время обработки</h3></div><span class="chart-unit">по дням</span></div>
+              <div class="chart-frame"><canvas id="perfChart" aria-label="Среднее время обработки по дням" role="img"></canvas></div>
+            </article>
+          </div>
+
+          <div class="charts-grid charts-secondary">
+            <article class="chart-card">
+              <div class="card-heading"><div><span class="section-kicker">Источники</span><h3>Платформы</h3></div></div>
+              <div class="chart-frame chart-frame--small"><canvas id="platformChart" aria-label="Запросы по платформам" role="img"></canvas></div>
+            </article>
+            <article class="chart-card">
+              <div class="card-heading"><div><span class="section-kicker">Результаты</span><h3>Статусы запросов</h3></div></div>
+              <div class="chart-frame chart-frame--small"><canvas id="statusChart" aria-label="Запросы по статусам" role="img"></canvas></div>
+            </article>
+            <article class="chart-card chart-full">
+              <div class="card-heading"><div><span class="section-kicker">Передача данных</span><h3>Трафик по дням</h3></div><span class="chart-unit">МБ</span></div>
+              <div class="chart-frame chart-frame--lead"><canvas id="trafficChart" aria-label="Трафик по дням за 30 дней" role="img"></canvas></div>
+            </article>
+          </div>
+        </section>
+
+        <section class="details-section" aria-labelledby="details-title">
+          <div class="section-heading">
+            <div><p class="eyebrow">Разрезы</p><h2 id="details-title">Платформы и пользователи</h2></div>
+          </div>
+          <div class="info-cards">
+            <article class="chart-card"><div class="card-heading"><div><span class="section-kicker">За 30 дней</span><h3>Трафик по платформам</h3></div></div><div id="trafficByPlatform" class="platform-list"></div></article>
+            <article class="chart-card"><div class="card-heading"><div><span class="section-kicker">За 30 дней</span><h3>Среднее время по платформам</h3></div></div><div id="avgByPlatform" class="platform-list"></div></article>
+            <article class="chart-card"><div class="card-heading"><div><span class="section-kicker">За всё время</span><h3>Чаще всего пользуются</h3></div></div><div id="topUsers" class="platform-list"></div></article>
+          </div>
+        </section>
+
+        <section class="table-wrap" aria-labelledby="recent-title">
+          <div class="table-head">
+            <div class="table-title"><p class="eyebrow">Журнал</p><h2 id="recent-title">Последние запросы</h2><span class="section-caption">Поиск работает по ссылкам, ошибкам, пользователям и ID</span></div>
+            <div class="filters">
+              <label><span class="sr-only">Фильтр по статусу</span><select id="f-status" aria-label="Фильтр по статусу">
+                <option value="">Все статусы</option><option value="success">Успех</option><option value="cached">Кэш</option><option value="compressed">Сжатие</option><option value="too_large">Превышение</option><option value="failed">Ошибка</option>
+              </select></label>
+              <label><span class="sr-only">Фильтр по платформе</span><select id="f-platform" aria-label="Фильтр по платформе">
+                <option value="">Все платформы</option><option value="tiktok">TikTok</option><option value="youtube">YouTube</option><option value="vk">VK</option><option value="instagram">Instagram</option><option value="twitter">X / Twitter</option><option value="bluesky">Bluesky</option><option value="reddit">Reddit</option><option value="pinterest">Pinterest</option><option value="flickr">Flickr</option><option value="tumblr">Tumblr</option><option value="facebook">Facebook</option>
+              </select></label>
+              <label class="search-field">
+                <span class="search-icon" aria-hidden="true"><svg viewBox="0 0 20 20"><circle cx="8.5" cy="8.5" r="5.5"/><path d="m13 13 4 4"/></svg></span>
+                <input id="f-search" type="search" aria-label="Поиск по журналу" placeholder="Найти запрос" />
+              </label>
+            </div>
+          </div>
+          <div class="table-scroll" tabindex="0" aria-label="Прокручиваемая таблица запросов">
+            <table>
+              <thead><tr><th>Время</th><th>Пользователь</th><th>Чат</th><th>Платформа</th><th>Ссылка</th><th>Статус</th><th>Размер</th><th>Обработка</th><th>Медиа</th><th>Ошибка</th></tr></thead>
+              <tbody id="tbody"></tbody>
+            </table>
+          </div>
+          <div class="pager">
+            <button class="button button-quiet" id="pg-prev" type="button" disabled>Назад</button>
+            <span id="pg-info" aria-live="polite">1 / 1</span>
+            <button class="button button-quiet" id="pg-next" type="button" disabled>Вперёд</button>
+          </div>
+        </section>
+      </main>
     </div>
 
-    <div
-      id="cache-modal-overlay"
-      class="cache-modal-overlay"
-      aria-hidden="true"
-    >
-      <div
-        id="cache-modal"
-        class="cache-modal"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="cache-modal-title"
-      >
-        <div class="cache-modal-head">
-          <h4 id="cache-modal-title">Кэш запроса</h4>
-          <button
-            type="button"
-            class="cache-modal-close"
-            id="cache-modal-close"
-            aria-label="Закрыть"
-          >
-            ×
+    <div id="cache-modal-overlay" class="cache-modal-overlay" aria-hidden="true">
+      <section id="cache-modal" class="cache-modal" role="dialog" aria-modal="true" aria-labelledby="cache-modal-title" aria-describedby="cache-modal-meta">
+        <header class="cache-modal-head">
+          <div><p class="eyebrow">Архив медиа</p><h2 id="cache-modal-title">Просмотр запроса</h2><p id="cache-modal-meta" class="cache-modal-meta">Медиа из кэша</p></div>
+          <button type="button" class="icon-button cache-modal-close" id="cache-modal-close" aria-label="Закрыть просмотр">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15" /></svg>
           </button>
-        </div>
-        <div class="cache-modal-body" id="cache-modal-body">
-          <span class="cache-modal-loading">Загрузка…</span>
-        </div>
-      </div>
+        </header>
+        <div class="cache-modal-body" id="cache-modal-body"><span class="cache-modal-loading">Открываем медиа</span></div>
+      </section>
     </div>
-
     <script src="/assets/dashboard.js" defer></script>
   </body>
 </html>

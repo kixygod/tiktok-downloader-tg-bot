@@ -2,7 +2,7 @@ import { Worker, Job } from "bullmq";
 import IORedis from "ioredis";
 import type { JobData } from "./types";
 import { runProcess } from "./process";
-import { canonicalMediaUrl, failureDecision, redact } from "./reliability";
+import { canonicalMediaUrl, failureDecision, redact, shouldFallbackToDocument } from "./reliability";
 import { Journal, StatsOutbox } from "./journal";
 import {
   statSync,
@@ -759,6 +759,7 @@ async function sendImagesInBatches(
   images: string[],
   messageId: number,
   ackMessageId: number,
+  jobId?: string,
 ) {
   const batchSize = 10;
 
@@ -787,6 +788,25 @@ async function sendImagesInBatches(
         await sleep(1000);
       }
     } catch (e) {
+      if (shouldFallbackToDocument(e)) {
+        journal.write("image_photo_fallback_to_document", {
+          jobId,
+          batch: Math.floor(i / batchSize) + 1,
+          count: batch.length,
+        });
+        for (let imageIndex = 0; imageIndex < batch.length; imageIndex++) {
+          if (imageIndex > 0) await sleep(1000);
+          await bot.api.sendChatAction(chatId, "upload_document").catch(() => {});
+          await bot.api.sendDocument(chatId, new InputFile(batch[imageIndex]), {
+            reply_to_message_id: messageId,
+            ...(imageIndex === 0
+              ? { caption: "Telegram не смог показать фото, поэтому отправляю его как файл." }
+              : {}),
+          });
+        }
+        if (i + batchSize < images.length) await sleep(1000);
+        continue;
+      }
       console.log(
         `Failed to send batch ${Math.floor(i / batchSize) + 1}: ${e}`,
       );
@@ -1636,6 +1656,7 @@ const worker = new Worker(
                 downloadedImages,
                 messageId,
                 ackMessageId,
+                job.id,
               );
 
               await recordStat(
