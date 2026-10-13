@@ -20,9 +20,17 @@ describe('external processes', () => {
 });
 describe('retry decisions', () => {
   it('keeps transient failures pending until final attempt', () => {
+    expect(failureDecision(new Error('HTTP 503'), 1, 3).message).toContain('(2/3)');
     expect(failureDecision(new Error('HTTP 503'), 1, 3).terminal).toBe(false);
     expect(failureDecision(new Error('HTTP 503'), 2, 3).terminal).toBe(false);
     expect(failureDecision(new Error('HTTP 503'), 3, 3).terminal).toBe(true);
+    expect(failureDecision(new Error('HTTP 503'), 1, 1).terminal).toBe(true);
+  });
+  it('explains disk exhaustion without scheduling futile download retries', () => {
+    const result = failureDecision(new Error("ENOSPC: no space left on device, mkdir '/tmp/downloads/jobs/test'"), 0, 3);
+    expect(result.terminal).toBe(true);
+    expect(result.message).toContain('На сервере закончилось место');
+    expect(result.message).not.toContain('Повторяю');
   });
   it('stops repeating login restrictions and explains them', () => {
     const result = failureDecision(new Error('TikTok: Log in for access'), 1, 3);

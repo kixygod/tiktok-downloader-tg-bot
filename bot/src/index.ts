@@ -82,6 +82,7 @@ import {
 import { rehydrateCacheMappingForJobUrl } from "./cacheRehydrate";
 import { DashboardEventBus } from "./dashboardEvents";
 import { registerDashboardAuth } from "./dashboardAuth";
+import { redisStorageError } from "./queueHealth";
 
 console.log("🔧 Environment variables:");
 console.log(`  BOT_TOKEN: ${token ? "SET" : "NOT SET"}`);
@@ -397,7 +398,22 @@ async function startServer() {
     fastify.log.warn({ error }, "Dashboard queue event stream is not ready");
   });
 
-  const heartbeat = setInterval(() => dashboardEvents.heartbeat(), 20000);
+  let lastStorageError: string | null = null;
+  let checkingStorage = false;
+  const heartbeat = setInterval(() => {
+    dashboardEvents.heartbeat();
+    if (checkingStorage) return;
+    checkingStorage = true;
+    void connection.info("persistence").then((info) => {
+      const storageError = redisStorageError(info);
+      if (storageError !== lastStorageError) {
+        lastStorageError = storageError;
+        dashboardEvents.publish(["queue"]);
+      }
+    }).catch((error) => {
+      fastify.log.warn({ error }, "Dashboard queue storage check failed");
+    }).finally(() => { checkingStorage = false; });
+  }, 20000);
   heartbeat.unref();
   fastify.addHook("onClose", async () => {
     clearInterval(heartbeat);
@@ -607,13 +623,14 @@ async function startServer() {
     await registerDashboardAuth(secured);
 
     secured.get("/api/queue", async () => {
-      const [waiting, active, delayed, failed] = await Promise.all([
+      const [waiting, active, delayed, failed, persistenceInfo] = await Promise.all([
         queue.getWaitingCount(),
         queue.getActiveCount(),
         queue.getDelayedCount(),
         queue.getFailedCount(),
+        connection.info("persistence"),
       ]);
-      return { waiting, active, delayed, failed };
+      return { waiting, active, delayed, failed, storageError: redisStorageError(persistenceInfo) };
     });
 
     secured.get("/api/admin/events", async (request, reply) => {

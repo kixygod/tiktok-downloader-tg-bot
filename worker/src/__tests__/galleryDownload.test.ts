@@ -41,7 +41,8 @@ describe("gallery-dl allowlist and image-only extraction", () => {
     const args = galleryDlArgs("https://bsky.app/profile/user.example/post/abc123");
     expect(args).toContain("--config-ignore");
     expect(args).toContain("--no-input");
-    expect(args).toContain("--get-urls");
+    expect(args).toContain("--resolve-urls");
+    expect(args).not.toContain("--get-urls");
     expect(args).toContain("--range");
     expect(args).toContain("1-10");
     expect(args).toContain("--filter");
@@ -64,5 +65,16 @@ describe("gallery-dl allowlist and image-only extraction", () => {
     expect(result).toContain("https://cdn.example/xrpc/getBlob?cid=abc");
     expect(result.some(url => url.endsWith("clip.mp4"))).toBe(false);
     expect(result.some(url => url.includes("127.0.0.1"))).toBe(false);
+  });
+
+  it("does not mistake Pinterest short-link redirects for images", () => {
+    const image = "https://i.pinimg.com/originals/ab/cd/ef/image.jpg";
+    const result = parseGalleryDlImageUrls([
+      "https://pin.it/AbC123",
+      "https://www.pinterest.com/pin/123456789/",
+      "https://www.pinterest.com/pin/123456789/sent/?invite_code=example",
+      image,
+    ].join("\n"));
+    expect(result).toEqual([image]);
   });
 });

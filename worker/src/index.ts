@@ -1544,13 +1544,12 @@ const worker = new Worker(
     const started = Date.now();
     const id = randomUUID();
     const jobDir = path.join(TMP_DIR, "jobs", id);
-    mkdirSync(jobDir, { recursive: true });
     const raw = path.join(jobDir, `${id}.mp4`);
     const out = path.join(jobDir, `${id}.out.mp4`);
 
-    journal.write("job_started", { jobId: job.id, attempt: job.attemptsMade, url });
-
     try {
+      journal.write("job_started", { jobId: job.id, attempt: job.attemptsMade, url });
+      mkdirSync(jobDir, { recursive: true });
       const expandedUrl = canonicalMediaUrl(await expandUrl(url));
       await rememberCacheUrlMapping(url, expandedUrl);
 

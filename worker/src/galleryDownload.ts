@@ -65,7 +65,7 @@ export function galleryDlArgs(url: string): string[] {
     "--http-timeout", "15", "--retries", "1",
     "--range", `1-${MAX_GALLERY_IMAGES}`,
     "--filesize-max", "5M", "--filter", IMAGE_FILTER,
-    "--get-urls", url,
+    "--resolve-urls", url,
   ];
 }
 
@@ -77,6 +77,8 @@ export function parseGalleryDlImageUrls(output: string): string[] {
     if (!raw || seen.has(raw)) continue;
     let url: URL;
     try { url = new URL(raw); } catch { continue; }
+    // Short links can emit an intermediary post page instead of a media URL.
+    if (galleryDlPlatform(raw) || /(^|\.)pinterest\.com$/i.test(url.hostname)) continue;
     const fileName = url.pathname.split("/").pop() || "";
     const extensionSeparator = fileName.lastIndexOf(".");
     const extension = extensionSeparator > 0

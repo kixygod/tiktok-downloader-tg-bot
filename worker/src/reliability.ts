@@ -34,12 +34,15 @@ export function failureDecision(error: Error, attemptsMade: number, attempts: nu
   const restricted = /private video|video has been removed/i.test(error.message) ||
     (!error.message.includes(" | fallback:") && /log in for access|login required|video unavailable/i.test(error.message));
   const telegramRejected = isPermanentTelegramFailure(error);
-  const terminal = restricted || telegramRejected || error.name === "NonRetryableDownloadError" || attemptsMade >= attempts;
+  const diskFull = /ENOSPC|no space left on device/i.test(error.message);
+  const terminal = restricted || telegramRejected || diskFull || error.name === "NonRetryableDownloadError" || attemptsMade >= attempts;
   return {
     terminal,
     message: !terminal
       ? `⏳ Временная ошибка. Повторяю обработку (${attemptsMade + 1}/${attempts})…`
-      : restricted
+      : diskFull
+        ? "❌ На сервере закончилось место. Загрузка временно недоступна, администратору нужно освободить диск."
+        : restricted
         ? "❌ Публикация недоступна без авторизации или удалена. Попробуйте другую ссылку."
         : telegramRejected
           ? "❌ Telegram отклонил медиа. Попробуйте другую публикацию."

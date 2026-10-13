@@ -252,9 +252,11 @@ async function loadQueue() {
     document.getElementById("q-waiting").textContent = d.waiting;
     document.getElementById("q-active").textContent = d.active;
     document.getElementById("q-delayed").textContent = d.delayed;
-    document.getElementById("queueStatus").textContent = d.failed
+    const queueStatus = document.getElementById("queueStatus");
+    queueStatus.classList.toggle("is-error", Boolean(d.storageError));
+    queueStatus.textContent = d.storageError || (d.failed
       ? `Ошибок в очереди: ${d.failed}`
-      : "Очередь без ошибок";
+      : "Очередь без ошибок");
     document.getElementById("lastUpdate").textContent =
       "Обновлено " + new Date().toLocaleTimeString("ru");
   } catch (e) {
@@ -865,6 +867,9 @@ function openCacheModal(jobId, kind, imageCount) {
   actions.append(download, fullscreen);
 
   if (kind === "video") {
+    stage.classList.add("media-stage--video");
+    const videoFrame = document.createElement("div");
+    videoFrame.className = "media-video-frame";
     const videoUrl = `/api/admin/cache/${encodeURIComponent(jobId)}/video`;
     const video = document.createElement("video");
     video.controls = false;
@@ -962,7 +967,8 @@ function openCacheModal(jobId, kind, imageCount) {
     });
     download.href = videoUrl;
     download.download = `media-${jobId}.mp4`;
-    stage.append(video, videoControls);
+    videoFrame.append(video);
+    stage.append(videoFrame, videoControls);
   } else {
     const image = document.createElement("img");
     image.alt = "";
