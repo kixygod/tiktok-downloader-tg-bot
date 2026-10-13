@@ -886,100 +886,14 @@ function openCacheModal(jobId, kind, imageCount) {
     videoFrame.className = "media-video-frame";
     const videoUrl = `/api/admin/cache/${encodeURIComponent(jobId)}/video`;
     const video = document.createElement("video");
-    video.controls = false;
+    video.controls = true;
+    video.volume = 0.25;
     video.playsInline = true;
     video.preload = "metadata";
     video.tabIndex = 0;
     video.src = videoUrl;
     video.setAttribute("aria-label", "Видео из кэша");
 
-    const videoControls = document.createElement("div");
-    videoControls.className = "media-video-controls";
-    videoControls.setAttribute("aria-label", "Управление видео");
-    videoControls.addEventListener("click", (event) => event.stopPropagation());
-
-    const playButton = document.createElement("button");
-    playButton.type = "button";
-    playButton.className = "media-control-button media-play-toggle";
-    playButton.setAttribute("aria-label", "Воспроизвести");
-
-    const seek = document.createElement("input");
-    seek.className = "media-seek";
-    seek.type = "range";
-    seek.min = "0";
-    seek.max = "1000";
-    seek.value = "0";
-    seek.setAttribute("aria-label", "Позиция воспроизведения");
-
-    const timeLabel = document.createElement("span");
-    timeLabel.className = "media-time";
-    timeLabel.setAttribute("aria-live", "off");
-
-    const muteButton = document.createElement("button");
-    muteButton.type = "button";
-    muteButton.className = "media-control-button media-mute-toggle";
-    muteButton.textContent = "Звук";
-
-    const volume = document.createElement("input");
-    volume.className = "media-volume";
-    volume.type = "range";
-    volume.min = "0";
-    volume.max = "1";
-    volume.step = "0.05";
-    volume.value = "0.8";
-    volume.setAttribute("aria-label", "Громкость");
-
-    const formatVideoTime = (seconds) => {
-      if (!Number.isFinite(seconds) || seconds < 0) return "0:00";
-      const total = Math.floor(seconds);
-      return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
-    };
-    const updateVideoControls = () => {
-      const duration = Number.isFinite(video.duration) ? video.duration : 0;
-      const position = Number.isFinite(video.currentTime) ? video.currentTime : 0;
-      seek.value = String(duration ? Math.round((position / duration) * 1000) : 0);
-      seek.setAttribute("aria-valuetext", `${formatVideoTime(position)} из ${formatVideoTime(duration)}`);
-      timeLabel.textContent = `${formatVideoTime(position)} / ${formatVideoTime(duration)}`;
-      playButton.innerHTML = video.paused
-        ? '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.5v11L13 8z" /></svg>'
-        : '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 3h3v10H4zm5 0h3v10H9z" /></svg>';
-      playButton.setAttribute("aria-label", video.paused ? "Воспроизвести" : "Пауза");
-      muteButton.setAttribute("aria-pressed", String(video.muted));
-      muteButton.setAttribute("aria-label", video.muted ? "Включить звук" : "Выключить звук");
-      muteButton.innerHTML = video.muted
-        ? '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 6h3l4-3v10l-4-3H2zm9-1 1.5 2L14 5l1 1-1.5 2L15 10l-1 1-1.5-2L11 11l-1-1 1.5-2L10 6z" /></svg>'
-        : '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 6h3l4-3v10l-4-3H2zm9-2v2a3 3 0 0 1 0 4v2a5 5 0 0 0 0-8z" /></svg>';
-    };
-
-    playButton.addEventListener("click", () => {
-      if (video.paused) video.play().catch(() => {});
-      else video.pause();
-    });
-    seek.addEventListener("input", () => {
-      if (Number.isFinite(video.duration) && video.duration > 0) {
-        video.currentTime = (Number(seek.value) / 1000) * video.duration;
-      }
-    });
-    muteButton.addEventListener("click", () => {
-      video.muted = !video.muted;
-      updateVideoControls();
-    });
-    volume.addEventListener("input", () => {
-      video.volume = Number(volume.value);
-      video.muted = video.volume === 0;
-      updateVideoControls();
-    });
-    ["play", "pause", "ended", "timeupdate", "loadedmetadata", "durationchange", "volumechange"].forEach((eventName) => {
-      video.addEventListener(eventName, updateVideoControls);
-    });
-    video.volume = Number(volume.value);
-    updateVideoControls();
-    videoControls.append(playButton, seek, timeLabel, muteButton, volume);
-    fullscreen.className = "media-control-button media-fullscreen-toggle";
-    fullscreen.setAttribute("aria-label", "На весь экран");
-    fullscreen.title = "На весь экран";
-    fullscreen.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1 1h5v2H3v3H1zm9 0h5v5h-2V3h-3zM1 10h2v3h3v2H1zm12 0h2v5h-5v-2h3z" /></svg>';
-    videoControls.append(fullscreen);
     const sizeVideo = () => fitModalWidth(video.videoWidth / video.videoHeight, videoFrame.clientHeight);
     video.addEventListener("loadedmetadata", sizeVideo);
     const videoObserver = new ResizeObserver(sizeVideo);
@@ -995,7 +909,7 @@ function openCacheModal(jobId, kind, imageCount) {
     download.href = videoUrl;
     download.download = `media-${jobId}.mp4`;
     videoFrame.append(video);
-    stage.append(videoFrame, videoControls);
+    stage.append(videoFrame);
   } else {
     stage.classList.add("media-stage--images");
     const canvas = document.createElement("div");
