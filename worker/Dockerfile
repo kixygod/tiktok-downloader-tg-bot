@@ -10,6 +10,7 @@ RUN npm run build && npm prune --omit=dev
 FROM node:20-alpine
 RUN apk add --no-cache ffmpeg python3 py3-pip ca-certificates curl \
   && pip install --no-cache-dir --break-system-packages -U "yt-dlp[default]"
+RUN pip install --no-cache-dir --break-system-packages --timeout 120 --retries 10 "gallery-dl==1.32.14"
 WORKDIR /app
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/node_modules ./node_modules

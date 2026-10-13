@@ -21,8 +21,19 @@ export function fmtDuration(ms: number): string {
   return `${Math.floor(ms / 60_000)}m ${Math.round((ms % 60_000) / 1000)}s`;
 }
 
+/** Builds a parameter value for a literal substring search in PostgreSQL LIKE/ILIKE. */
+export function toContainsLikePattern(value: string): string {
+  const escaped = value.trim().slice(0, 120).replace(/[!%_]/g, "!$&");
+  return `%${escaped}%`;
+}
+
 export function escapeHtml(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 export function parseDashboardBasicAuth(raw: string): {

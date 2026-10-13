@@ -251,6 +251,10 @@ header h1 {
   font-size: 0.8rem;
 }
 
+.filters input[type="search"] {
+  width: min(340px, 75vw);
+}
+
 .filters select:focus,
 .filters input:focus {
   outline: none;
@@ -261,6 +265,12 @@ table {
   width: 100%;
   border-collapse: collapse;
   font-size: 0.82rem;
+}
+
+.empty-table {
+  padding: 28px 12px;
+  color: var(--muted);
+  text-align: center;
 }
 
 th {

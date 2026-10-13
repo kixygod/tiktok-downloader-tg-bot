@@ -9,6 +9,7 @@ let loadStatsBusy = false;
 let loadQueueBusy = false;
 let loadChartsBusy = false;
 let loadRecentBusy = false;
+let loadRecentPending = false;
 let modalFocusTrapCleanup = null;
 let focusBeforeModal = null;
 
@@ -167,6 +168,12 @@ function platformLabel(p) {
       vk: "VK",
       instagram: "Instagram",
       twitter: "X / Twitter",
+      bluesky: "Bluesky",
+      reddit: "Reddit",
+      pinterest: "Pinterest",
+      flickr: "Flickr",
+      tumblr: "Tumblr",
+      facebook: "Facebook",
     }[p] ||
     p ||
     "—"
@@ -580,18 +587,22 @@ function renderStatusChart(data) {
 }
 
 async function loadRecent() {
-  if (docHidden() || loadRecentBusy) return;
+  if (docHidden()) return;
+  if (loadRecentBusy) {
+    loadRecentPending = true;
+    return;
+  }
   loadRecentBusy = true;
   const status = document.getElementById("f-status").value;
   const platform = document.getElementById("f-platform").value;
-  const chat_id = document.getElementById("f-chat").value.trim();
+  const search = document.getElementById("f-search").value.trim();
   const params = new URLSearchParams({
     limit: PAGE_SIZE,
     offset: page * PAGE_SIZE,
   });
   if (status) params.set("status", status);
   if (platform) params.set("platform", platform);
-  if (chat_id) params.set("chat_id", chat_id);
+  if (search) params.set("q", search);
 
   try {
     const r = await fetch("/api/admin/recent?" + params, {
@@ -605,13 +616,15 @@ async function loadRecent() {
     totalRows = d.total ?? 0;
     const tbody = document.getElementById("tbody");
     const items = Array.isArray(d.items) ? d.items : [];
-    tbody.innerHTML = items
+    tbody.innerHTML = items.length
+      ? items
       .map((j) => {
         const url = j.url || "";
         const urlDisplay = url
           ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(url)}</a>`
           : "—";
-        const err = j.error_message
+        const fullError = j.error_message ? escapeHtml(String(j.error_message)) : "";
+        const err = fullError
           ? escapeHtml(String(j.error_message).slice(0, 80))
           : "";
         const userName =
@@ -658,10 +671,11 @@ async function loadRecent() {
 <td>${fmtBytes(j.bytes)}</td>
 <td>${fmtMs(j.duration_ms)}</td>
 <td class="cache-cell">${cacheCell}</td>
-<td class="error-cell" title="${err}">${err || "—"}</td>
+<td class="error-cell" title="${fullError}">${err || "—"}</td>
     </tr>`;
       })
-      .join("");
+      .join("")
+      : '<tr><td colspan="10" class="empty-table">По этим фильтрам запросов нет</td></tr>';
 
     const pages = Math.ceil(totalRows / PAGE_SIZE);
     document.getElementById("pg-info").textContent = `${page + 1} / ${
@@ -674,6 +688,10 @@ async function loadRecent() {
     showToast("Таблица: сеть", "error");
   } finally {
     loadRecentBusy = false;
+    if (loadRecentPending) {
+      loadRecentPending = false;
+      loadRecent();
+    }
   }
 }
 
@@ -695,10 +713,10 @@ document.getElementById("f-platform").onchange = () => {
   page = 0;
   loadRecent();
 };
-let chatTimer;
-document.getElementById("f-chat").oninput = () => {
-  clearTimeout(chatTimer);
-  chatTimer = setTimeout(() => {
+let searchTimer;
+document.getElementById("f-search").oninput = () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => {
     page = 0;
     loadRecent();
   }, 400);

@@ -39,11 +39,40 @@ describe("extractSupportedUrls", () => {
     expect(result[0].platform).toBe("vk");
   });
 
+  it.each([
+    ["https://bsky.app/profile/example.com/post/3kabc123", "bluesky"],
+    ["https://www.reddit.com/r/pics/comments/abc123/public_photo/", "reddit"],
+    ["https://redd.it/abc123", "reddit"],
+    ["https://www.pinterest.com/pin/123456789012345678/", "pinterest"],
+    ["https://pin.it/AbC123", "pinterest"],
+    ["https://www.flickr.com/photos/example/12345678901/", "flickr"],
+    ["https://flic.kr/p/abc123", "flickr"],
+    ["https://www.tumblr.com/example/123456789012345", "tumblr"],
+    ["https://example.tumblr.com/post/123456789012345", "tumblr"],
+    ["https://www.facebook.com/example/posts/1234567890", "facebook"],
+    ["https://www.facebook.com/photo.php?fbid=1234567890", "facebook"],
+    ["https://vk.com/photo-123456_789012", "vk"],
+    ["https://vk.com/wall-123456_789012", "vk"],
+    ["https://vk.com/album-123456_789012", "vk"],
+  ])("извлекает ссылку на изображение %s", (url, platform) => {
+    expect(extractSupportedUrls(url)).toContainEqual({ url, platform });
+  });
+
+  it("не принимает поддельные домены соцсетей", () => {
+    const result = extractSupportedUrls("https://notreddit.com/r/pics/comments/abc123 https://fakebsky.app/profile/u/post/abc");
+    expect(result).toHaveLength(0);
+  });
+
   it("извлекает Instagram Reels", () => {
     const text = "https://www.instagram.com/reel/ABC123xyz/";
     const result = extractSupportedUrls(text);
     expect(result).toHaveLength(1);
     expect(result[0].platform).toBe("instagram");
+  });
+
+  it("извлекает Instagram TV публикации", () => {
+    const result = extractSupportedUrls("https://www.instagram.com/tv/ABC123xyz/");
+    expect(result[0]?.platform).toBe("instagram");
   });
 
   it("извлекает Instagram посты (p/)", () => {

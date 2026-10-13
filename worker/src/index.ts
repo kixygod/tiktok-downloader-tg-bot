@@ -29,6 +29,7 @@ import {
 import { isYouTubeUrl, ytdlpFormatArgs } from "./ytdlpFormat";
 import { tikTokFallbackRequests, parseTikTokFallbackMedia, fetchSssTikMedia } from "./tiktokFallback";
 import { normalizeImageForTelegram } from "./images";
+import { galleryDlPlatform, getGalleryDlImageUrls } from "./galleryDownload";
 
 const redisUrl = process.env.REDIS_URL!;
 const queueName = process.env.QUEUE_NAME || "tiktok";
@@ -650,6 +651,14 @@ async function ytDownload(
 const IMAGE_DOWNLOAD_CONCURRENCY = Number(
   process.env.IMAGE_DOWNLOAD_CONCURRENCY || "3",
 );
+const IMAGE_FILE_EXTENSIONS = new Set([
+  ".avif", ".bmp", ".gif", ".heic", ".heif", ".jpeg", ".jpg",
+  ".png", ".tif", ".tiff", ".webp",
+]);
+
+function isImagePath(filePath: string): boolean {
+  return IMAGE_FILE_EXTENSIONS.has(path.extname(filePath).toLowerCase());
+}
 
 async function downloadSingleImage(
   imageUrl: string,
@@ -659,12 +668,30 @@ async function downloadSingleImage(
 ): Promise<string | null> {
   const imagePath = path.join(imageDir, `image_${randomUUID()}_${index}.jpg`);
   const proxyNames = ["Shadowsocks", "Hysteria2", "VLESS"];
+  const curlArgs = [
+    "--fail",
+    "--silent",
+    "--show-error",
+    "--location",
+    "--proto",
+    "=http,https",
+    "--proto-redir",
+    "=http,https",
+    "--connect-timeout",
+    "10",
+    "--max-time",
+    "30",
+    "--max-filesize",
+    String(5 * 1024 * 1024),
+    "--output",
+    imagePath,
+    imageUrl,
+  ];
 
   // Сначала пробуем без прокси (быстрее на VPS без блокировок)
   if (!XRAY_ENABLED || PROXY_LIST.length === 0) {
     try {
-      const args = ["-L", "-o", imagePath, imageUrl];
-      await run("curl", args);
+      await run("curl", curlArgs);
       await normalizeImageForTelegram(imagePath);
       return imagePath;
     } catch (e) {
@@ -676,15 +703,19 @@ async function downloadSingleImage(
   for (let j = 0; j < PROXY_LIST.length; j++) {
     const proxy = PROXY_LIST[j];
     try {
-      const args = ["-L", "--proxy", proxy, "-o", imagePath, imageUrl];
+      const args = [
+        ...curlArgs.slice(0, -3),
+        "--proxy",
+        proxy,
+        ...curlArgs.slice(-3),
+      ];
       await run("curl", args);
       await normalizeImageForTelegram(imagePath);
       return imagePath;
     } catch (e) {
       if (j === PROXY_LIST.length - 1) {
         try {
-          const args = ["-L", "-o", imagePath, imageUrl];
-          await run("curl", args);
+          await run("curl", curlArgs);
           await normalizeImageForTelegram(imagePath);
           return imagePath;
         } catch (e2) {
@@ -1148,6 +1179,35 @@ async function alternativeWithCause(url: string, outPath: string, primary: Error
   }
 }
 
+async function tryGalleryDlImages(url: string): Promise<string[]> {
+  const platform = galleryDlPlatform(url);
+  if (!platform) return [];
+  try {
+    const images = await getGalleryDlImageUrls(url);
+    if (images.length > 0) {
+      journal.write("fallback_succeeded", {
+        service: "gallery-dl",
+        platform,
+        type: "images",
+        count: images.length,
+      });
+      return images;
+    }
+    journal.write("fallback_failed", {
+      service: "gallery-dl",
+      platform,
+      error: "no public image URLs returned",
+    });
+  } catch (error) {
+    journal.write("fallback_failed", {
+      service: "gallery-dl",
+      platform,
+      error: redact(String(error)),
+    });
+  }
+  return [];
+}
+
 async function tryAlternativeDownload(
   url: string,
   outPath: string,
@@ -1173,6 +1233,8 @@ async function tryAlternativeDownload(
     if (ig) return ig;
     const igMirror = await tryInstagramMirrorSources(url, outPath);
     if (igMirror) return igMirror;
+    const igImages = await tryGalleryDlImages(url);
+    if (igImages.length > 0) return { type: "images", data: igImages };
     console.log(
       "Instagram: embed не дал video_url (приватный пост, блок IP или только фото)",
     );
@@ -1182,6 +1244,8 @@ async function tryAlternativeDownload(
   }
 
   if (!isTikTokPageUrl(url)) {
+    const galleryImages = await tryGalleryDlImages(url);
+    if (galleryImages.length > 0) return { type: "images", data: galleryImages };
     throw new Error("All download methods failed");
   }
 
@@ -1535,7 +1599,18 @@ const worker = new Worker(
             }
           };
 
-          const result = await ytDownload(expandedUrl, raw, progressCallback);
+          let result = await ytDownload(expandedUrl, raw, progressCallback);
+
+          if (result.type === "video" && isImagePath(result.data as string)) {
+            const galleryImages = await tryGalleryDlImages(expandedUrl);
+            if (galleryImages.length > 0) {
+              result = { type: "images", data: galleryImages };
+            } else {
+              throw new Error(
+                "yt-dlp returned an image file, but no public image URLs could be extracted",
+              );
+            }
+          }
 
           if (result.type === "images") {
             console.log(
@@ -1549,6 +1624,12 @@ const worker = new Worker(
                 (sum, img) => sum + statSync(img).size,
                 0,
               );
+
+              if (totalBytes > MAX_BYTES) {
+                throw new NonRetryableDownloadError(
+                  `Image album too large (${totalBytes} > ${MAX_BYTES})`,
+                );
+              }
 
               await sendImagesInBatches(
                 chatId,

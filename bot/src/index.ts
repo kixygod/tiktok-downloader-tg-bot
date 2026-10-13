@@ -59,7 +59,11 @@ import {
   JOBS_RETENTION_DAYS,
   JOBS_PURGE_INTERVAL_HOURS,
 } from "./config";
-import { parseDashboardBasicAuth, timingSafeEqualUtf8 } from "./utils";
+import {
+  parseDashboardBasicAuth,
+  timingSafeEqualUtf8,
+  toContainsLikePattern,
+} from "./utils";
 import type { StatsBody } from "./types";
 import { initDB, pool, startJobsRetentionSchedule } from "./db";
 import { insertStat } from "./stats";
@@ -477,6 +481,7 @@ async function startServer() {
       status,
       platform,
       chat_id,
+      q,
     } = (request as any).query;
 
     let where = "WHERE 1=1";
@@ -494,6 +499,11 @@ async function startServer() {
     if (chat_id) {
       where += ` AND chat_id = $${idx++}`;
       params.push(Number(chat_id));
+    }
+    if (typeof q === "string" && q.trim()) {
+      where += ` AND (url ILIKE $${idx} ESCAPE '!' OR COALESCE(username, '') ILIKE $${idx} ESCAPE '!' OR COALESCE(first_name, '') ILIKE $${idx} ESCAPE '!' OR chat_id::text ILIKE $${idx} ESCAPE '!' OR user_id::text ILIKE $${idx} ESCAPE '!' OR id::text ILIKE $${idx} ESCAPE '!' OR COALESCE(error_message, '') ILIKE $${idx} ESCAPE '!')`;
+      params.push(toContainsLikePattern(q));
+      idx++;
     }
 
     const countQ = await pool.query(

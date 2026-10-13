@@ -6,6 +6,7 @@ import {
   parseDashboardBasicAuth,
   timingSafeEqualUtf8,
   deriveStatsIngestSecret,
+  toContainsLikePattern,
 } from "../utils";
 
 describe("fmtBytes", () => {
@@ -40,6 +41,13 @@ describe("fmtDuration", () => {
   });
 });
 
+describe("toContainsLikePattern", () => {
+  it("escapes LIKE metacharacters and limits the search term", () => {
+    expect(toContainsLikePattern("  50%_off!  ")).toBe("%50!%!_off!!%");
+    expect(toContainsLikePattern("x".repeat(130))).toBe(`%${"x".repeat(120)}%`);
+  });
+});
+
 describe("escapeHtml", () => {
   it("экранирует < и >", () => {
     expect(escapeHtml("<script>")).toBe("&lt;script&gt;");
@@ -47,6 +55,12 @@ describe("escapeHtml", () => {
 
   it("экранирует &", () => {
     expect(escapeHtml("a & b")).toBe("a &amp; b");
+  });
+
+  it("экранирует кавычки для безопасных HTML-атрибутов", () => {
+    expect(escapeHtml('" onmouseover=\'alert(1)\'')).toBe(
+      "&quot; onmouseover=&#39;alert(1)&#39;",
+    );
   });
 
   it("не меняет безопасный текст", () => {

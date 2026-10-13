@@ -6,6 +6,50 @@ export const SUPPORTED_URL_PATTERNS: { pattern: RegExp; platform: string }[] = [
     platform: "tiktok",
   },
   {
+    pattern: /(https?:\/\/(?:www\.)?bsky\.app\/profile\/[^/\s]+\/post\/[a-zA-Z0-9]+[^\s]*)/gi,
+    platform: "bluesky",
+  },
+  {
+    pattern: /(https?:\/\/(?:www\.|old\.|new\.)?reddit\.com\/(?:r\/[^/\s]+\/comments\/[a-zA-Z0-9]+(?:\/[^\s]*)?|gallery\/[a-zA-Z0-9]+[^\s]*))/gi,
+    platform: "reddit",
+  },
+  {
+    pattern: /(https?:\/\/redd\.it\/[a-zA-Z0-9]+[^\s]*)/gi,
+    platform: "reddit",
+  },
+  {
+    pattern: /(https?:\/\/(?:www\.)?pinterest\.com\/pin\/[0-9]+[^\s]*)/gi,
+    platform: "pinterest",
+  },
+  {
+    pattern: /(https?:\/\/pin\.it\/[a-zA-Z0-9]+[^\s]*)/gi,
+    platform: "pinterest",
+  },
+  {
+    pattern: /(https?:\/\/(?:www\.)?flickr\.com\/photos\/[^/\s]+\/[0-9]+[^\s]*)/gi,
+    platform: "flickr",
+  },
+  {
+    pattern: /(https?:\/\/flic\.kr\/p\/[a-zA-Z0-9]+[^\s]*)/gi,
+    platform: "flickr",
+  },
+  {
+    pattern: /(https?:\/\/(?:www\.)?tumblr\.com\/[^/\s]+\/[0-9]+[^\s]*)/gi,
+    platform: "tumblr",
+  },
+  {
+    pattern: /(https?:\/\/[a-zA-Z0-9-]+\.tumblr\.com\/post\/[0-9]+[^\s]*)/gi,
+    platform: "tumblr",
+  },
+  {
+    pattern: /(https?:\/\/(?:www\.|m\.)?facebook\.com\/(?:photo\.php\?[^\s]*fbid=[0-9]+[^\s]*|[^/\s]+\/(?:posts|photos)\/[^\s]+|permalink\.php\?[^\s]*story_fbid=[0-9]+[^\s]*))/gi,
+    platform: "facebook",
+  },
+  {
+    pattern: /(https?:\/\/(?:www\.)?vk\.com\/(?:photo-?\d+_\d+|wall-?\d+_\d+|album-?\d+_\d+)[^\s]*)/gi,
+    platform: "vk",
+  },
+  {
     pattern: /(https?:\/\/(?:www\.)?youtube\.com\/shorts\/[^\s]+)/gi,
     platform: "youtube",
   },
@@ -14,7 +58,7 @@ export const SUPPORTED_URL_PATTERNS: { pattern: RegExp; platform: string }[] = [
     platform: "vk",
   },
   {
-    pattern: /(https?:\/\/(?:www\.)?instagram\.com\/reel\/[^\s]+)/gi,
+    pattern: /(https?:\/\/(?:www\.)?instagram\.com\/(?:reel|tv)\/[^\s]+)/gi,
     platform: "instagram",
   },
   {
