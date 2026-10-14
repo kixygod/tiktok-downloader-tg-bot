@@ -11,6 +11,7 @@ export interface ExtractedUrl {
 export interface JobData {
   chatId: number;
   messageId: number;
+  messageThreadId?: number;
   ackMessageId: number;
   url: string;
   platform: string;
@@ -29,6 +30,8 @@ export interface StatsBody {
   bytes: number;
   duration_ms: number;
   chat_id: number;
+  source_message_id?: number | null;
+  source_thread_id?: number | null;
   user_id?: number | null;
   username?: string | null;
   first_name?: string | null;

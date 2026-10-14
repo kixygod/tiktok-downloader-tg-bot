@@ -2,6 +2,7 @@
 export interface JobData {
   chatId: number;
   messageId: number;
+  messageThreadId?: number;
   ackMessageId: number;
   url: string;
   platform: string;

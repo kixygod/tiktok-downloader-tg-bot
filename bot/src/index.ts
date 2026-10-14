@@ -225,6 +225,7 @@ bot.on("message:text", async (ctx) => {
       {
         chatId: ctx.chat.id,
         messageId: ctx.message.message_id,
+        messageThreadId: ctx.message.message_thread_id,
         ackMessageId: ack.message_id,
         url: extracted.url,
         platform: extracted.platform,
@@ -493,6 +494,8 @@ async function startServer() {
       bytes: { type: "integer", minimum: 0 },
       duration_ms: { type: "integer", minimum: 0 },
       chat_id: { type: "integer" },
+      source_message_id: { type: ["integer", "null"] },
+      source_thread_id: { type: ["integer", "null"] },
       user_id: { type: ["integer", "null"] },
       username: { type: ["string", "null"], maxLength: 256 },
       first_name: { type: ["string", "null"], maxLength: 256 },
@@ -573,7 +576,7 @@ async function startServer() {
     );
 
     const dataQ = await pool.query(
-      `SELECT id, ts, url, chat_id, user_id, username, first_name, platform, status, bytes, duration_ms, error_message
+      `SELECT id, ts, url, chat_id, source_message_id, source_thread_id, user_id, username, first_name, platform, status, bytes, duration_ms, error_message
        FROM jobs ${where}
        ORDER BY ts DESC
        LIMIT $${idx++} OFFSET $${idx++}`,
@@ -862,6 +865,117 @@ async function startServer() {
       );
       return { ...data, items };
     });
+
+    const messageActionTarget = async (jobId: number) => {
+      if (!Number.isSafeInteger(jobId) || jobId < 1) return null;
+      const { rows } = await pool.query(
+        "SELECT chat_id, source_message_id, source_thread_id FROM jobs WHERE id = $1",
+        [jobId],
+      );
+      const target = rows[0] as {
+        chat_id: string | number;
+        source_message_id: string | number | null;
+        source_thread_id: string | number | null;
+      } | undefined;
+      return target?.source_message_id == null ? null : target;
+    };
+
+    const requireDashboardOrigin = (request: any, reply: any): boolean => {
+      const origin = request.headers.origin;
+      const forwardedProto = String(request.headers["x-forwarded-proto"] ?? "")
+        .split(",")[0]
+        .trim();
+      const protocol = forwardedProto || request.protocol;
+      let sameOrigin = false;
+      try {
+        sameOrigin = Boolean(origin) && new URL(origin).origin === `${protocol}://${request.headers.host}`;
+      } catch {}
+      if (!sameOrigin) {
+        reply.status(403).send({ error: "Запрос должен прийти из админки." });
+        return false;
+      }
+      return true;
+    };
+
+    secured.post(
+      "/api/admin/jobs/:jobId/reaction",
+      {
+        schema: {
+          body: {
+            type: "object",
+            required: ["emoji"],
+            properties: { emoji: { type: "string", minLength: 1, maxLength: 32 } },
+            additionalProperties: false,
+          },
+        },
+      },
+      async (request: any, reply: any) => {
+        if (!requireDashboardOrigin(request, reply)) return;
+        const jobId = Number(request.params.jobId);
+        const target = await messageActionTarget(jobId);
+        if (!target) return reply.status(404).send({ error: "У заявки нет сохранённого исходного сообщения." });
+        const emoji = String(request.body.emoji);
+        const remove = emoji === "remove";
+        const isEmoji = /^[\p{Extended_Pictographic}\p{Regional_Indicator}\uFE0F\u200D\u{1F3FB}-\u{1F3FF}]+$/u.test(emoji);
+        if (!remove && (!isEmoji || Array.from(emoji).length > 12)) {
+          return reply.status(400).send({ error: "Выбери один эмодзи реакции." });
+        }
+        try {
+          const reaction: Parameters<typeof bot.api.setMessageReaction>[2] = remove
+            ? []
+            : [{ type: "emoji", emoji: emoji.replace(/\uFE0F/g, "") as any }];
+          await bot.api.setMessageReaction(
+            Number(target.chat_id),
+            Number(target.source_message_id),
+            reaction,
+          );
+          request.log.info({ jobId, emoji: remove ? null : emoji }, "Dashboard reaction updated");
+          return reply.send({ ok: true, message: remove ? "Реакция снята." : `Реакция ${emoji} поставлена.` });
+        } catch (error) {
+          request.log.warn({ error, jobId }, "Telegram rejected dashboard reaction");
+          return reply.status(502).send({ error: "Telegram не принял реакцию. Возможно, она запрещена в этом чате." });
+        }
+      },
+    );
+
+    secured.post(
+      "/api/admin/jobs/:jobId/reply",
+      {
+        schema: {
+          body: {
+            type: "object",
+            required: ["text"],
+            properties: { text: { type: "string", minLength: 1, maxLength: 4096 } },
+            additionalProperties: false,
+          },
+        },
+      },
+      async (request: any, reply: any) => {
+        if (!requireDashboardOrigin(request, reply)) return;
+        const jobId = Number(request.params.jobId);
+        const target = await messageActionTarget(jobId);
+        if (!target) return reply.status(404).send({ error: "У заявки нет сохранённого исходного сообщения." });
+        const messageText = String(request.body.text).trim();
+        if (!messageText || messageText.length > 4096) {
+          return reply.status(400).send({ error: "Текст должен содержать от 1 до 4096 символов." });
+        }
+        try {
+          await bot.api.sendMessage(Number(target.chat_id), messageText, {
+            ...(target.source_thread_id == null
+              ? {}
+              : { message_thread_id: Number(target.source_thread_id) }),
+            reply_parameters: {
+              message_id: Number(target.source_message_id),
+            },
+          });
+          request.log.info({ jobId }, "Dashboard reply sent");
+          return reply.send({ ok: true, message: "Ответ отправлен от имени бота." });
+        } catch (error) {
+          request.log.warn({ error, jobId }, "Telegram rejected dashboard reply");
+          return reply.status(502).send({ error: "Telegram не смог отправить сообщение. Проверь, доступен ли боту этот чат." });
+        }
+      },
+    );
 
     secured.get(
       "/api/admin/cache/:jobId/video",

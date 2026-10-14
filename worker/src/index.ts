@@ -1528,6 +1528,8 @@ function buildStatPayload(
     bytes,
     duration_ms: Date.now() - started,
     chat_id: data.chatId,
+    source_message_id: data.messageId,
+    source_thread_id: data.messageThreadId ?? null,
     user_id: data.userId ?? null,
     username: data.username ?? null,
     first_name: data.firstName ?? null,

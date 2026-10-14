@@ -261,6 +261,14 @@ tbody td:nth-child(6) { width: 16%; }
 .badge-fail { background: var(--danger-soft); color: var(--danger); }
 .error-cell { max-width: 220px; overflow: hidden; color: var(--danger); font-size: 0.7rem; text-overflow: ellipsis; white-space: nowrap; }
 .cache-cell { white-space: nowrap; }
+.message-actions { margin-top: 7px; white-space: normal; }
+.message-actions summary { width: fit-content; color: var(--brand-strong); cursor: pointer; font-size: 0.68rem; font-weight: 620; }
+.message-reply-form, .message-reaction-form { display: flex; align-items: center; gap: 6px; margin-top: 7px; }
+.message-reply-form { align-items: stretch; flex-direction: column; }
+.message-reply-form textarea { width: 100%; min-height: 48px; resize: vertical; padding: 7px 8px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--surface); color: var(--text); font: inherit; font-size: 0.7rem; }
+.message-actions .button { min-height: 30px; padding: 0 8px; font-size: 0.67rem; }
+.message-reaction-form select { min-width: 0; height: 31px; padding: 0 5px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--surface); color: var(--text); }
+.message-action-status { display: block; min-height: 1em; margin-top: 5px; color: var(--muted); font-size: 0.65rem; line-height: 1.35; white-space: normal; }
 .cache-miss-wrap { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
 .btn-cache-view, .btn-cache-rehydrate { min-height: 32px; border: 1px solid var(--line-strong); border-radius: 8px; cursor: pointer; transition: border-color var(--ease), background-color var(--ease), color var(--ease); }
 .btn-cache-view { padding: 0 9px; background: var(--brand-soft); border-color: var(--line-strong); color: var(--brand-strong); font-size: 0.68rem; font-weight: 650; }

@@ -33,6 +33,8 @@ export async function initDB(): Promise<void> {
         CREATE INDEX IF NOT EXISTS idx_jobs_ts_status ON jobs (ts, status);
       `);
       await pool.query("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS event_id TEXT");
+      await pool.query("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS source_message_id BIGINT");
+      await pool.query("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS source_thread_id BIGINT");
       await pool.query("CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS idx_jobs_event_id ON jobs (event_id)");
       console.log("✅ PostgreSQL tables initialized");
       return;
