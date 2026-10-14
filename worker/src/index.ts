@@ -1,6 +1,7 @@
 import { Worker, Job } from "bullmq";
 import IORedis from "ioredis";
 import type { JobData } from "./types";
+import { buildStatPayload } from "./stats";
 import { runProcess } from "./process";
 import { canonicalMediaUrl, failureDecision, redact } from "./reliability";
 import { Journal, StatsOutbox } from "./journal";
@@ -1511,31 +1512,6 @@ async function recordStat(payload: any): Promise<void> {
   journal.write("job_result", payload);
   try { await statsOutbox.record(payload); }
   catch (error) { journal.write("stats_outbox_error", { error: String(error) }); }
-}
-
-function buildStatPayload(
-  job: Job,
-  started: number,
-  status: string,
-  bytes: number,
-  errorMessage?: string,
-) {
-  const data = job.data as JobData;
-  return {
-    ts: started,
-    url: data.url,
-    status,
-    bytes,
-    duration_ms: Date.now() - started,
-    chat_id: data.chatId,
-    source_message_id: data.messageId,
-    source_thread_id: data.messageThreadId ?? null,
-    user_id: data.userId ?? null,
-    username: data.username ?? null,
-    first_name: data.firstName ?? null,
-    platform: data.platform ?? null,
-    error_message: errorMessage ?? null,
-  };
 }
 
 const worker = new Worker(

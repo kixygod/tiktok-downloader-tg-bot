@@ -6,7 +6,7 @@
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <meta name="theme-color" content="#f3f4f5" />
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E" />
-    <link rel="stylesheet" href="/assets/dashboard.css?v=20261014-dashboard-actions" />
+    <link rel="stylesheet" href="/assets/dashboard.css?v=20261014-contact-dialog" />
     <script src="/vendor/chart.umd.js"></script>
   </head>
 
@@ -165,6 +165,35 @@
         <div class="cache-modal-body" id="cache-modal-body"><span class="cache-modal-loading">Открываем медиа</span></div>
       </section>
     </div>
-    <script src="/assets/dashboard.js?v=20261014-dashboard-actions" defer></script>
+    <dialog id="contact-dialog" class="contact-dialog" aria-labelledby="contact-title" aria-describedby="contact-context">
+      <header class="contact-head">
+        <div><p class="eyebrow">Общение через бота</p><h2 id="contact-title">Ответ на сообщение</h2></div>
+        <button type="button" id="contact-close" class="icon-button" aria-label="Закрыть окно ответа"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15" /></svg></button>
+      </header>
+      <div class="contact-context" id="contact-context">
+        <div class="contact-person"><span id="contact-avatar" class="contact-avatar" aria-hidden="true"></span><div><strong id="contact-recipient"></strong><span id="contact-chat"></span></div><span id="contact-request" class="contact-request"></span></div>
+        <a id="contact-source" class="contact-source" target="_blank" rel="noopener noreferrer"></a>
+      </div>
+      <form id="contact-form" class="contact-form">
+        <div class="contact-label"><label for="contact-text">Сообщение</label><span id="contact-count">0 / 4096</span></div>
+        <textarea id="contact-text" name="text" rows="5" maxlength="4096" placeholder="Напишите ответ…" autofocus></textarea>
+        <div class="contact-reaction-section">
+          <p class="contact-label">Реакция на исходное сообщение</p>
+          <div id="contact-reactions" class="contact-reactions" role="group" aria-label="Поставить или снять реакцию">
+            <button type="button" data-contact-reaction="&#x1F44D;" aria-label="Нравится" aria-pressed="false">&#x1F44D;</button>
+            <button type="button" data-contact-reaction="&#x2764;&#xFE0F;" aria-label="Сердце" aria-pressed="false">&#x2764;&#xFE0F;</button>
+            <button type="button" data-contact-reaction="&#x1F525;" aria-label="Огонь" aria-pressed="false">&#x1F525;</button>
+            <button type="button" data-contact-reaction="&#x1F923;" aria-label="Смех" aria-pressed="false">&#x1F923;</button>
+            <button type="button" data-contact-reaction="&#x1F389;" aria-label="Праздник" aria-pressed="false">&#x1F389;</button>
+            <button type="button" data-contact-reaction="&#x1F440;" aria-label="Смотрю" aria-pressed="false">&#x1F440;</button>
+            <button type="button" data-contact-reaction="&#x1F64F;" aria-label="Спасибо" aria-pressed="false">&#x1F64F;</button>
+            <button type="button" data-contact-reaction="remove" class="contact-remove" aria-label="Снять реакцию">Снять</button>
+          </div>
+        </div>
+        <p id="contact-status" class="contact-status" role="status" aria-live="polite"></p>
+        <footer class="contact-footer"><span>От имени бота, в ответ на исходное сообщение</span><button type="submit" id="contact-send" class="button contact-send" disabled>Отправить ответ<svg viewBox="0 0 20 20" aria-hidden="true"><path d="m3 3 14 7-14 7 3-7-3-7ZM6 10h11" /></svg></button></footer>
+      </form>
+    </dialog>
+    <script src="/assets/dashboard.js?v=20261014-contact-dialog" defer></script>
   </body>
 </html>

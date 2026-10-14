@@ -18,6 +18,96 @@ let focusBeforeModal = null;
 let eventSource = null;
 let refreshTimer = null;
 const pendingScopes = new Set();
+let contactTargets = new Map();
+const contactDrafts = new Map();
+let contactJob = null;
+let contactBusy = false;
+
+function saveContactDraft() {
+  if (!contactJob) return;
+  const key = String(contactJob.id);
+  contactDrafts.set(key, {
+    ...contactDrafts.get(key),
+    text: document.getElementById("contact-text").value,
+  });
+}
+
+function updateContactControls() {
+  const text = document.getElementById("contact-text");
+  text.disabled = contactBusy;
+  document.getElementById("contact-send").disabled = contactBusy || !text.value.trim();
+  document.getElementById("contact-count").textContent = `${text.value.length} / 4096`;
+  document.getElementById("contact-form").setAttribute("aria-busy", String(contactBusy));
+  const reaction = contactDrafts.get(String(contactJob?.id))?.reaction;
+  document.querySelectorAll("[data-contact-reaction]").forEach(button => {
+    button.disabled = contactBusy;
+    button.setAttribute("aria-pressed", String(button.dataset.contactReaction === reaction));
+  });
+}
+
+function openContactDialog(jobId) {
+  const target = contactTargets.get(String(jobId));
+  if (!target?.source_message_id) return;
+  contactJob = target;
+  const dialog = document.getElementById("contact-dialog");
+  const name = target.first_name || target.username || "Пользователь";
+  document.getElementById("contact-recipient").textContent = name;
+  document.getElementById("contact-avatar").textContent = userAvatarInitial(name);
+  document.getElementById("contact-chat").textContent = target.chatTitle || (target.chatType === "private" ? "Личный чат" : `Чат ${target.chat_id}`);
+  document.getElementById("contact-request").textContent = `Запрос #${target.id}`;
+  const source = document.getElementById("contact-source");
+  source.textContent = target.url || "Ссылка не указана";
+  if (/^https?:\/\//i.test(target.url || "")) source.href = target.url;
+  else source.removeAttribute("href");
+  document.getElementById("contact-text").value = contactDrafts.get(String(jobId))?.text || "";
+  const status = document.getElementById("contact-status");
+  status.textContent = contactBusy ? "Предыдущее действие ещё выполняется…" : "";
+  status.dataset.tone = "";
+  updateContactControls();
+  document.body.classList.add("modal-open");
+  dialog.showModal();
+}
+
+async function sendContactAction(action, payload) {
+  if (contactBusy || !contactJob) return;
+  const key = String(contactJob.id);
+  const status = document.getElementById("contact-status");
+  saveContactDraft();
+  contactBusy = true;
+  updateContactControls();
+  status.dataset.tone = "";
+  status.textContent = action === "reply" ? "Отправляем ответ…" : "Обновляем реакцию…";
+  try {
+    const response = await fetch(`/api/admin/jobs/${encodeURIComponent(key)}/${action}`, {
+      method: "POST", credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "Не удалось выполнить действие.");
+    const draft = contactDrafts.get(key) || {};
+    if (action === "reply") draft.text = "";
+    else draft.reaction = payload.emoji === "remove" ? null : payload.emoji;
+    contactDrafts.set(key, draft);
+    if (String(contactJob.id) === key) {
+      if (action === "reply") document.getElementById("contact-text").value = "";
+      status.textContent = result.message;
+      status.dataset.tone = "success";
+    }
+  } catch (error) {
+    if (String(contactJob.id) === key) {
+      status.textContent = error instanceof Error ? error.message : "Не удалось связаться с сервером.";
+      status.dataset.tone = "error";
+    }
+  } finally {
+    contactBusy = false;
+    if (String(contactJob.id) !== key) {
+      status.textContent = "";
+      status.dataset.tone = "";
+    }
+    updateContactControls();
+  }
+}
 
 function docHidden() {
   return document.visibilityState === "hidden";
@@ -687,7 +777,9 @@ async function loadRecent() {
     }
     totalRows = d.total ?? 0;
     const tbody = document.getElementById("tbody");
+    const focusedContactId = document.activeElement?.dataset.contactJobId;
     const items = Array.isArray(d.items) ? d.items : [];
+    contactTargets = new Map(items.map((item) => [String(item.id), item]));
     tbody.innerHTML = items.length
       ? items
       .map((j) => {
@@ -735,21 +827,12 @@ async function loadRecent() {
         } else {
           cacheCell = `<span class="cache-miss-wrap"><span class="cache-miss" title="Медиа больше нет в кэше">Нет в кэше</span><button type="button" class="btn-cache-rehydrate" title="Проверить кэш на диске" data-job-id="${escapeHtml(String(j.id))}" aria-label="Проверить кэш, запрос ${requestId}"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M16 10a6 6 0 1 1-1.5-4M16 4v4h-4" /></svg></button></span>`;
         }
-        if (j.source_message_id) {
-          cacheCell += `<details class="message-actions">
-<summary>Связаться</summary>
-<form class="message-reply-form" data-job-id="${escapeHtml(String(j.id))}">
-<label class="sr-only" for="reply-${requestId}">Ответ клиенту по запросу ${requestId}</label>
-<textarea id="reply-${requestId}" name="text" rows="2" maxlength="4096" required placeholder="Ответить в исходный чат…"></textarea>
-<button class="button button-primary" type="submit">Ответить от бота</button>
-</form>
-<div class="message-reaction-form"><label class="sr-only" for="reaction-${requestId}">Реакция на сообщение запроса ${requestId}</label><select id="reaction-${requestId}" aria-label="Выбрать реакцию"><option value="👍">👍</option><option value="❤️">❤️</option><option value="🔥">🔥</option><option value="😂">😂</option><option value="🎉">🎉</option><option value="👀">👀</option><option value="🙏">🙏</option><option value="remove">Снять реакцию</option></select><button class="button button-quiet" type="button" data-reaction-job-id="${escapeHtml(String(j.id))}">Поставить</button></div>
-<span class="message-action-status" role="status" aria-live="polite"></span>
-</details>`;
-        }
+        const messageActions = j.source_message_id
+          ? `<button type="button" class="contact-trigger" data-contact-job-id="${requestId}" aria-label="Ответить или поставить реакцию, запрос ${requestId}" aria-haspopup="dialog"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M16 10a6 6 0 0 1-6 6H4l-2 2V10a8 8 0 0 1 14-5"/><path d="M6 8h5M6 11h3"/></svg>Ответить</button>`
+          : '<span class="contact-unavailable" title="Исходное сообщение не сохранено. Ответ с привязкой и реакции недоступны.">Ответ недоступен</span>';
         return `<tr>
 <td data-label="Запрос"><div class="request-cell"><span class="request-id">#${requestId}</span>${urlDisplay}<span class="request-meta">${requestTime}</span></div></td>
-<td data-label="Пользователь и чат"><div class="person-cell">${avatarHtml}<div class="person-content"><div class="user-cell">${userLink}</div><div class="person-chat">${chatBadge}${chatLink}</div></div></div></td>
+<td data-label="Пользователь и чат"><div class="contact-cell"><div class="person-cell">${avatarHtml}<div class="person-content"><div class="user-cell">${userLink}</div><div class="person-chat">${chatBadge}${chatLink}</div></div></div>${messageActions}</div></td>
 <td data-label="Источник"><span class="platform-chip">${escapeHtml(platformLabel(j.platform))}</span></td>
 <td data-label="Результат"><div class="status-cell">${statusBadge(j.status)}${err ? `<span class="error-cell" title="${fullError}">${err}</span>` : ""}</div></td>
 <td data-label="Медиа" class="cache-cell">${cacheCell}</td>
@@ -758,7 +841,9 @@ async function loadRecent() {
       })
       .join("")
       : '<tr><td colspan="6" class="empty-table">По этим фильтрам запросов нет</td></tr>';
-
+    if (focusedContactId) {
+      [...tbody.querySelectorAll("[data-contact-job-id]")].find(el => el.dataset.contactJobId === focusedContactId)?.focus({ preventScroll: true });
+    }
     const pages = Math.ceil(totalRows / PAGE_SIZE);
     document.getElementById("pg-info").textContent = `${page + 1} / ${
       pages || 1
@@ -1158,47 +1243,29 @@ window.onload = () => {
       Number(btn.dataset.imageCount || 0),
     );
   });
-  document.getElementById("tbody").addEventListener("click", async (event) => {
-    const button = event.target.closest("[data-reaction-job-id]");
-    if (!button) return;
-    const container = button.closest(".message-actions");
-    const status = container.querySelector(".message-action-status");
-    button.disabled = true;
-    try {
-      const response = await fetch(`/api/admin/jobs/${encodeURIComponent(button.dataset.reactionJobId)}/reaction`, {
-        method: "POST", credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ emoji: container.querySelector("select").value }),
-      });
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.error || "Не удалось изменить реакцию.");
-      status.textContent = result.message;
-    } catch (error) {
-      status.textContent = error instanceof Error ? error.message : "Ошибка Telegram API.";
-    } finally { button.disabled = false; }
+  document.getElementById("tbody").addEventListener("click", (event) => {
+    const trigger = event.target.closest("[data-contact-job-id]");
+    if (trigger) openContactDialog(trigger.dataset.contactJobId);
   });
-  document.getElementById("tbody").addEventListener("submit", async (event) => {
-    const form = event.target.closest(".message-reply-form");
-    if (!form) return;
+  document.getElementById("contact-close").addEventListener("click", () => document.getElementById("contact-dialog").close());
+  document.getElementById("contact-dialog").addEventListener("close", () => {
+    saveContactDraft();
+    if (!document.getElementById("cache-modal-overlay").classList.contains("open")) document.body.classList.remove("modal-open");
+    const trigger = [...document.querySelectorAll("[data-contact-job-id]")].find(el => el.dataset.contactJobId === String(contactJob?.id));
+    (trigger || document.querySelector(".table-scroll")).focus({ preventScroll: true });
+  });
+  document.getElementById("contact-text").addEventListener("input", () => {
+    saveContactDraft();
+    updateContactControls();
+  });
+  document.getElementById("contact-form").addEventListener("submit", (event) => {
     event.preventDefault();
-    const button = form.querySelector("button[type=submit]");
-    const status = form.closest(".message-actions").querySelector(".message-action-status");
-    const text = form.elements.text.value.trim();
-    if (!text) return;
-    button.disabled = true;
-    try {
-      const response = await fetch(`/api/admin/jobs/${encodeURIComponent(form.dataset.jobId)}/reply`, {
-        method: "POST", credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
-      });
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.error || "Не удалось отправить сообщение.");
-      status.textContent = result.message;
-      form.reset();
-    } catch (error) {
-      status.textContent = error instanceof Error ? error.message : "Ошибка Telegram API.";
-    } finally { button.disabled = false; }
+    const text = document.getElementById("contact-text").value.trim();
+    if (text) sendContactAction("reply", { text });
+  });
+  document.getElementById("contact-reactions").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-contact-reaction]");
+    if (button) sendContactAction("reaction", { emoji: button.dataset.contactReaction });
   });
   document
     .getElementById("cache-modal-close")
